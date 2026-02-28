@@ -1,0 +1,96 @@
+use super::syntax::{Expression, BinaryOperator};
+use std::rc::Rc;
+
+grammar;
+
+pub Program: Expression = Expr;
+
+Ident: Rc<str> = r"[a-zA-Z$_]\w*" => Rc::from(<>);
+
+Int: i64 = r"\-?[0-9]+" => <>.parse().unwrap();
+
+Float: f64 = r"\-?[0-9+](\.[0-9]+)?(e[+\-]?[0-9]+)" => <>.parse().unwrap();
+
+String: Rc<str> = r#""([^\\]|(\\["nrt\\]))*""# => <>.parse::<String>().unwrap().into();
+
+Expr0: Expression = {
+    Int => Expression::Int(<>),
+    Float => Expression::Float(<>),
+    String => Expression::String(<>),
+    Ident => Expression::Ident(<>),
+    "(" <Expr> ")",
+}
+
+Expr1: Expression = {
+    Expr0,
+    Box<Expr1> DotOp Box<Expr0> => Expression::BinaryOperation(<>),
+    <function:Box<Expr1>> "(" <args:Sep<Expr, ",">> ")" => Expression::FunctionCall{ <> },
+    <base:Box<Expr1>> "[" <index:Box<Expr>> "]" => Expression::BinaryOperation(base, BinaryOperator::Index, index),
+};
+
+DotOp: BinaryOperator = "." => BinaryOperator::Dot;
+
+Expr2 = Tier<T2, Expr1>;
+
+T2: BinaryOperator = {
+    "*" => BinaryOperator::Mul,
+    "/" => BinaryOperator::Div,
+    "%" => BinaryOperator::Mod,
+}
+
+Expr3 = Tier<T3, Expr2>;
+
+T3: BinaryOperator = {
+    "-" => BinaryOperator::Sub,
+    "+" => BinaryOperator::Add,
+}
+
+Expr4 = Tier<T4, Expr3>;
+
+T4: BinaryOperator = {
+    "==" => BinaryOperator::Eq,
+    "!=" => BinaryOperator::Ne,
+    "<" => BinaryOperator::Lt,
+    "<=" => BinaryOperator::Le,
+    ">" => BinaryOperator::Gt,
+    ">=" => BinaryOperator::Ge,
+}
+
+Expr: Expression = {
+    Expr4,
+    <condition:Box<Expr4>> "?" <body:Box<Expr4>> ":" <else_body:Box<Expr>> => Expression::If { <> },
+    "let" <var:Ident> "=" <val:Box<Expr>> ";" <body:Box<Expr>> => Expression::Let { <> },
+}
+
+#[inline]
+Sep<T, S>: Vec<T> = {
+    <mut v:(<T> S)*> <e:T?> => match e {
+        None => v,
+        Some(e) => {
+            v.push(e);
+            v
+        }
+    }
+};
+
+#[inline]
+NonEmptySep<T, S>: Vec<T> = <StrictSep<T, S>> S?;
+
+#[inline]
+StrictSep<T, S>: Vec<T> = {
+    <mut v:(<T> S)*> <e:T> => {
+        v.push(e);
+        v
+    }
+}
+
+Tier<Op,NextTier>: Expression = {
+    Box<Tier<Op,NextTier>> Op Box<NextTier> => Expression::BinaryOperation(<>),
+    NextTier
+};
+
+#[inline]
+Box<T>: Box<T> = T => Box::new(<>);
+
+#[inline]
+Some<T>: Option<T> = T => Some(<>);
