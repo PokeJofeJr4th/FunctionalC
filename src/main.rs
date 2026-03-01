@@ -12,7 +12,7 @@ fn main() {
     match interpreter::interpret(syn) {
         Ok(res) => {
             println!("{res:?}");
-            let c = CCompiler.compile(&res);
+            let c = CCompiler::new().compile(&res);
             println!("{c}");
         }
         Err(err) => {

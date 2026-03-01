@@ -19,6 +19,10 @@ impl Compiler for CCompiler {
 }
 
 impl CCompiler {
+    pub fn new() -> Self {
+        Self
+    }
+
     fn write_type(&self, ty: &IRType) -> String {
         match ty {
             IRType::Int | IRType::Boolean => "int".to_string(),
