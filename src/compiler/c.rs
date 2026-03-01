@@ -4,11 +4,29 @@ use crate::{
         ArithmeticOperator, BooleanOperator, ComparisonOperator, IRExpr, IRType, IRValue, LValue,
     },
 };
-use std::{collections::HashSet, fmt::Write};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::{Display, Write},
+};
 
 pub struct CCompiler {
+    constants: HashMap<LValue, LValue>,
     functypes: HashSet<IRType>,
     typedefs: String,
+}
+
+enum CompileResult {
+    Source(String),
+    LValue(LValue),
+}
+
+impl Display for CompileResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Source(s) => write!(f, "{s}"),
+            Self::LValue(l) => write!(f, "{l}"),
+        }
+    }
 }
 
 impl Compiler for CCompiler {
@@ -28,6 +46,7 @@ impl Compiler for CCompiler {
 impl CCompiler {
     pub fn new() -> Self {
         Self {
+            constants: HashMap::new(),
             functypes: HashSet::new(),
             typedefs: String::new(),
         }
@@ -54,7 +73,8 @@ impl CCompiler {
                 short_name.push('_');
                 if !self.functypes.contains(ty) {
                     self.functypes.insert(ty.clone());
-                    let mut typedef = format!("typedef {}(*{short_name})(", self.write_type(output));
+                    let mut typedef =
+                        format!("typedef {}(*{short_name})(", self.write_type(output));
                     let mut first = true;
                     for i in inputs {
                         if first {
@@ -73,18 +93,31 @@ impl CCompiler {
         }
     }
 
-    fn compile_expr(&mut self, expr: &IRValue, prelude: &mut String) -> Result<String, String> {
+    fn compile_expr(
+        &mut self,
+        expr: &IRValue,
+        prelude: &mut String,
+    ) -> Result<CompileResult, String> {
         match &expr.0 {
-            IRExpr::GetLocal(lvalue) => Ok(format!("{lvalue}")),
+            IRExpr::GetLocal(lvalue) => Ok(CompileResult::LValue(
+                self.constants.get(lvalue).copied().unwrap_or(*lvalue),
+            )),
             IRExpr::SetLocal(lvalue, value, body) => {
                 let ty = value.1.clone();
                 let val = self.compile_expr(value, prelude)?;
-                write!(prelude, "{} {lvalue}={val};", self.write_type(&ty)).unwrap();
+                match val {
+                    CompileResult::LValue(lv) => {
+                        self.constants.insert(*lvalue, lv);
+                    }
+                    CompileResult::Source(val) => {
+                        write!(prelude, "{} {lvalue}={val};", self.write_type(&ty)).unwrap();
+                    }
+                }
                 self.compile_expr(body, prelude)
             }
-            IRExpr::Int(i) => Ok(format!("{i}")),
-            IRExpr::Float(f) => Ok(format!("{f}")),
-            IRExpr::String(s) => Ok(format!("{s:?}")),
+            IRExpr::Int(i) => Ok(CompileResult::Source(format!("{i}"))),
+            IRExpr::Float(f) => Ok(CompileResult::Source(format!("{f}"))),
+            IRExpr::String(s) => Ok(CompileResult::Source(format!("{s:?}"))),
             IRExpr::If {
                 condition,
                 body,
@@ -98,40 +131,44 @@ impl CCompiler {
                 let lvalue = LValue::new();
                 write!(prelude, "{} {lvalue};if({cond}){{{body_prelude}{lvalue}={body};}}else{{{else_prelude}{lvalue}={else_body};}}", self.write_type(&expr.1)).unwrap();
 
-                Ok(format!("{lvalue}"))
+                Ok(CompileResult::LValue(lvalue))
             }
             IRExpr::Arithmetic(lhs, op, rhs) => {
                 let lhs = self.compile_expr(lhs, prelude)?;
                 let rhs = self.compile_expr(rhs, prelude)?;
                 match op {
-                    ArithmeticOperator::Add => Ok(format!("({lhs}+{rhs})")),
-                    ArithmeticOperator::Sub => Ok(format!("({lhs}-{rhs})")),
-                    ArithmeticOperator::Div => Ok(format!("({lhs}/{rhs})")),
-                    ArithmeticOperator::Mul => Ok(format!("({lhs}*{rhs})")),
-                    ArithmeticOperator::Mod => Ok(format!("({lhs}%{rhs})")),
+                    ArithmeticOperator::Add => Ok(CompileResult::Source(format!("({lhs}+{rhs})"))),
+                    ArithmeticOperator::Sub => Ok(CompileResult::Source(format!("({lhs}-{rhs})"))),
+                    ArithmeticOperator::Div => Ok(CompileResult::Source(format!("({lhs}/{rhs})"))),
+                    ArithmeticOperator::Mul => Ok(CompileResult::Source(format!("({lhs}*{rhs})"))),
+                    ArithmeticOperator::Mod => Ok(CompileResult::Source(format!("({lhs}%{rhs})"))),
                 }
             }
             IRExpr::Comparison(lhs, op, rhs) => {
                 let lhs = self.compile_expr(lhs, prelude)?;
                 let rhs = self.compile_expr(rhs, prelude)?;
                 match op {
-                    ComparisonOperator::Eq => Ok(format!("({lhs}=={rhs})")),
-                    ComparisonOperator::Ne => Ok(format!("({lhs}!={rhs})")),
-                    ComparisonOperator::Le => Ok(format!("({lhs}<={rhs})")),
-                    ComparisonOperator::Ge => Ok(format!("({lhs}>={rhs})")),
-                    ComparisonOperator::Lt => Ok(format!("({lhs}<{rhs})")),
-                    ComparisonOperator::Gt => Ok(format!("({lhs}>{rhs})")),
+                    ComparisonOperator::Eq => Ok(CompileResult::Source(format!("({lhs}=={rhs})"))),
+                    ComparisonOperator::Ne => Ok(CompileResult::Source(format!("({lhs}!={rhs})"))),
+                    ComparisonOperator::Le => Ok(CompileResult::Source(format!("({lhs}<={rhs})"))),
+                    ComparisonOperator::Ge => Ok(CompileResult::Source(format!("({lhs}>={rhs})"))),
+                    ComparisonOperator::Lt => Ok(CompileResult::Source(format!("({lhs}<{rhs})"))),
+                    ComparisonOperator::Gt => Ok(CompileResult::Source(format!("({lhs}>{rhs})"))),
                 }
             }
             IRExpr::Boolean(lhs, op, rhs) => {
                 let lhs = self.compile_expr(lhs, prelude)?;
                 let rhs = self.compile_expr(rhs, prelude)?;
                 match op {
-                    BooleanOperator::And => Ok(format!("({lhs}&&{rhs})")),
-                    BooleanOperator::Or => Ok(format!("({lhs}||{rhs})")),
+                    BooleanOperator::And => Ok(CompileResult::Source(format!("({lhs}&&{rhs})"))),
+                    BooleanOperator::Or => Ok(CompileResult::Source(format!("({lhs}||{rhs})"))),
                 }
             }
-            IRExpr::Function { params, body } => {
+            IRExpr::Function {
+                params,
+                body,
+                captures,
+            } => {
                 let funcname = LValue::new();
                 let IRType::Function { inputs, output } = &expr.1 else {
                     return Err(format!("Expected function type; got `{:?}`", expr.1));
@@ -149,12 +186,12 @@ impl CCompiler {
                 }
                 write!(funcdef, "){{").map_err(|e| e.to_string())?;
                 let body = self.compile_expr(body, &mut funcdef)?;
-                write!(funcdef, "return {body};}}\n").map_err(|e| e.to_string())?;
+                writeln!(funcdef, "return {body};}}").map_err(|e| e.to_string())?;
                 self.typedefs.push_str(&funcdef);
-                Ok(format!("{funcname}"))
+                Ok(CompileResult::LValue(funcname))
             }
             IRExpr::FunctionCall(func, args) => {
-                let mut funcall = self.compile_expr(func, prelude)?;
+                let mut funcall = format!("{}", self.compile_expr(func, prelude)?);
                 funcall.push('(');
                 let mut first = true;
                 for arg in args {
@@ -163,10 +200,11 @@ impl CCompiler {
                     } else {
                         funcall.push(',');
                     }
-                    funcall.push_str(&self.compile_expr(arg, prelude)?);
+                    funcall.push_str(&format!("{}", self.compile_expr(arg, prelude)?));
                 }
                 funcall.push(')');
-                Ok(funcall)
+                println!("{func:?}{args:?}");
+                Ok(CompileResult::Source(funcall))
             }
         }
     }

@@ -1,4 +1,7 @@
-use std::{collections::HashMap, rc::Rc};
+use std::{
+    collections::{HashMap, HashSet},
+    rc::Rc,
+};
 
 use crate::{
     interpreter::representation::{
@@ -154,7 +157,10 @@ fn to_ir(syn: Expression, mut context: Context) -> Result<IRValue, String> {
             let IRType::Function { inputs, output } = &func.1 else {
                 return Err(format!("Expected a function; got `{:?}`", func.1));
             };
-            for (IRValue(_, param_type), arg_type) in args.iter().zip(inputs.iter()) {
+            if inputs.len() != args.len() {
+                return Err(format!("Wrong number of arguments"));
+            }
+            for (IRValue(_, arg_type), param_type) in args.iter().zip(inputs.iter()) {
                 if param_type != arg_type {
                     return Err(format!(
                         "Function type parameter mismatch; expected `{:?}` but got `{:?}`",
@@ -179,6 +185,7 @@ fn to_ir(syn: Expression, mut context: Context) -> Result<IRValue, String> {
             let out_ty = body.1.clone();
             Ok(IRValue(
                 IRExpr::Function {
+                    captures: find_captures(&body, &params),
                     params,
                     body: Box::new(body),
                 },
@@ -189,4 +196,58 @@ fn to_ir(syn: Expression, mut context: Context) -> Result<IRValue, String> {
             ))
         }
     }
+}
+
+fn find_captures(body: &IRValue, params: &[LValue]) -> Vec<LValue> {
+    let mut values = HashSet::new();
+    let mut blacklist = params.iter().copied().collect();
+    fn visit_captures(
+        val: &IRValue,
+        values: &mut HashSet<LValue>,
+        blacklist: &mut HashSet<LValue>,
+    ) {
+        match &val.0 {
+            IRExpr::GetLocal(lvalue) => {
+                values.insert(*lvalue);
+            }
+            IRExpr::SetLocal(lvalue, irvalue, irvalue1) => {
+                blacklist.insert(*lvalue);
+                visit_captures(irvalue, values, blacklist);
+                visit_captures(irvalue1, values, blacklist);
+            }
+            IRExpr::Int(_) | IRExpr::Float(_) | IRExpr::String(_) => todo!(),
+            IRExpr::If {
+                condition,
+                body,
+                else_body,
+            } => {
+                visit_captures(condition, values, blacklist);
+                visit_captures(body, values, blacklist);
+                visit_captures(else_body, values, blacklist);
+            }
+            IRExpr::Arithmetic(irvalue, _, irvalue1)
+            | IRExpr::Comparison(irvalue, _, irvalue1)
+            | IRExpr::Boolean(irvalue, _, irvalue1) => {
+                visit_captures(irvalue, values, blacklist);
+                visit_captures(irvalue1, values, blacklist);
+            }
+            IRExpr::Function {
+                params,
+                captures,
+                body,
+            } => {
+                blacklist.extend(params);
+                values.extend(captures);
+                visit_captures(body, values, blacklist);
+            }
+            IRExpr::FunctionCall(irvalue, irvalues) => {
+                visit_captures(irvalue, values, blacklist);
+                for i in irvalues {
+                    visit_captures(i, values, blacklist);
+                }
+            }
+        }
+    }
+    visit_captures(body, &mut values, &mut blacklist);
+    values.difference(&blacklist).copied().collect()
 }

@@ -1,6 +1,9 @@
-use std::{fmt::{Display, Debug}, rc::Rc};
+use std::{
+    fmt::{Debug, Display},
+    rc::Rc,
+};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LValue(usize);
 
 static mut NEXT_LVALUE: usize = 0;
@@ -51,6 +54,7 @@ pub enum IRExpr {
     Boolean(Box<IRValue>, BooleanOperator, Box<IRValue>),
     Function {
         params: Vec<LValue>,
+        captures: Vec<LValue>,
         body: Box<IRValue>,
     },
     FunctionCall(Box<IRValue>, Vec<IRValue>),

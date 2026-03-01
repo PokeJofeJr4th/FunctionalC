@@ -8,10 +8,10 @@ fn main() {
     let syn = parser::grammar::ProgramParser::new()
         .parse(include_str!("../test.fc"))
         .unwrap();
-    // println!("{syn:#?}");
+    println!("{syn:#?}");
     match interpreter::interpret(syn) {
         Ok(res) => {
-            // println!("{res:#?}");
+            println!("{res:#?}");
             let c = CCompiler::new().compile(&res).unwrap();
             println!("{c}");
         }
