@@ -1,0 +1,2 @@
+let sum = (x: int, y: int) => x + y;
+sum(2, 4)

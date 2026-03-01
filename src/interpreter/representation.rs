@@ -1,6 +1,6 @@
-use std::{fmt::Display, rc::Rc};
+use std::{fmt::{Display, Debug}, rc::Rc};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct LValue(usize);
 
 static mut NEXT_LVALUE: usize = 0;
@@ -17,6 +17,12 @@ impl LValue {
 impl Display for LValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "_{}", self.0)
+    }
+}
+
+impl Debug for LValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self)
     }
 }
 
@@ -43,6 +49,11 @@ pub enum IRExpr {
     Arithmetic(Box<IRValue>, ArithmeticOperator, Box<IRValue>),
     Comparison(Box<IRValue>, ComparisonOperator, Box<IRValue>),
     Boolean(Box<IRValue>, BooleanOperator, Box<IRValue>),
+    Function {
+        params: Vec<LValue>,
+        body: Box<IRValue>,
+    },
+    FunctionCall(Box<IRValue>, Vec<IRValue>),
 }
 
 impl IRExpr {
@@ -76,10 +87,14 @@ pub enum BooleanOperator {
     Or,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Hash)]
 pub enum IRType {
     Int,
     Float,
     String,
     Boolean,
+    Function {
+        inputs: Vec<IRType>,
+        output: Box<IRType>,
+    },
 }

@@ -142,7 +142,7 @@ fn to_ir(syn: Expression, mut context: Context) -> Result<IRValue, String> {
             let val_ir = to_ir(*val, context.clone())?;
             context.insert(var, (new_lvalue, val_ir.1.clone()));
             let body_ir = to_ir(*body, context)?;
-            let ty = val_ir.1.clone();
+            let ty = body_ir.1.clone();
             Ok(IRExpr::SetLocal(new_lvalue, Box::new(val_ir), Box::new(body_ir)).typed(ty))
         }
         Expression::FunctionCall { function, args } => {
@@ -151,7 +151,42 @@ fn to_ir(syn: Expression, mut context: Context) -> Result<IRValue, String> {
                 .map(|arg| to_ir(arg, context.clone()))
                 .collect::<Result<Vec<IRValue>, String>>()?;
             let func = to_ir(*function, context)?;
-            Err(format!("Expected a function; got `{func:?}`"))
+            let IRType::Function { inputs, output } = &func.1 else {
+                return Err(format!("Expected a function; got `{:?}`", func.1));
+            };
+            for (IRValue(_, param_type), arg_type) in args.iter().zip(inputs.iter()) {
+                if param_type != arg_type {
+                    return Err(format!(
+                        "Function type parameter mismatch; expected `{:?}` but got `{:?}`",
+                        param_type, arg_type
+                    ));
+                }
+            }
+            let output = (**output).clone();
+            Ok(IRValue(IRExpr::FunctionCall(Box::new(func), args), output))
+        }
+        Expression::Function { args, body } => {
+            let mut new_context = context.clone();
+            let mut params = Vec::new();
+            let mut inputs = Vec::new();
+            for (v, t) in args {
+                let new_lv = LValue::new();
+                params.push(new_lv);
+                inputs.push(t.clone());
+                new_context.insert(v, (new_lv, t));
+            }
+            let body = to_ir(*body, new_context)?;
+            let out_ty = body.1.clone();
+            Ok(IRValue(
+                IRExpr::Function {
+                    params,
+                    body: Box::new(body),
+                },
+                IRType::Function {
+                    inputs,
+                    output: Box::new(out_ty),
+                },
+            ))
         }
     }
 }

@@ -1,5 +1,7 @@
 use std::rc::Rc;
 
+use crate::interpreter::representation::IRType;
+
 #[derive(Debug)]
 pub enum Expression {
     String(Rc<str>),
@@ -21,6 +23,10 @@ pub enum Expression {
         function: Box<Expression>,
         args: Vec<Expression>,
     },
+    Function {
+        args: Vec<(Rc<str>, IRType)>,
+        body: Box<Expression>
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

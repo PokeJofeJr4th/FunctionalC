@@ -1,4 +1,5 @@
 use super::syntax::{Expression, BinaryOperator};
+use crate::interpreter::representation::IRType;
 use std::rc::Rc;
 
 grammar;
@@ -67,6 +68,18 @@ Expr: Expression = {
     Expr5,
     <condition:Box<Expr5>> "?" <body:Box<Expr5>> ":" <else_body:Box<Expr>> => Expression::If { <> },
     "let" <var:Ident> "=" <val:Box<Expr>> ";" <body:Box<Expr>> => Expression::Let { <> },
+    "(" <args:Sep<Param, ",">> ")" "=>" <body:Box<Expr>> => Expression::Function { <> },
+}
+
+Param: (Rc<str>, IRType) = <Ident> ":" <IRType>;
+
+IRType: IRType = {
+    "int" => IRType::Int,
+    "float" => IRType::Float,
+    "string" => IRType::String,
+    "bool" => IRType::Boolean,
+    "(" <inputs:Sep<IRType,",">> ")" "->" <output:Box<IRType>> => IRType::Function{ <> },
+    "(" <IRType> ")" => <>
 }
 
 #[inline]

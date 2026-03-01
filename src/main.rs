@@ -6,13 +6,13 @@ mod compiler;
 
 fn main() {
     let syn = parser::grammar::ProgramParser::new()
-        .parse("let x = 11; x == 0 || x % 2 == 1 ? 21 : x + x")
+        .parse(include_str!("../test.fc"))
         .unwrap();
-    println!("{syn:?}");
+    // println!("{syn:#?}");
     match interpreter::interpret(syn) {
         Ok(res) => {
-            println!("{res:?}");
-            let c = CCompiler::new().compile(&res);
+            // println!("{res:#?}");
+            let c = CCompiler::new().compile(&res).unwrap();
             println!("{c}");
         }
         Err(err) => {
