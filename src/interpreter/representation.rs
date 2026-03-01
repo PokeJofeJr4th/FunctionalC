@@ -1,7 +1,5 @@
 use std::{fmt::Display, rc::Rc};
 
-use crate::parser::syntax::BinaryOperator;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LValue(usize);
 
@@ -42,7 +40,9 @@ pub enum IRExpr {
         body: Box<IRValue>,
         else_body: Box<IRValue>,
     },
-    BinaryOperation(Box<IRValue>, BinaryOperator, Box<IRValue>),
+    Arithmetic(Box<IRValue>, ArithmeticOperator, Box<IRValue>),
+    Comparison(Box<IRValue>, ComparisonOperator, Box<IRValue>),
+    Boolean(Box<IRValue>, BooleanOperator, Box<IRValue>),
 }
 
 impl IRExpr {
@@ -51,9 +51,35 @@ impl IRExpr {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArithmeticOperator {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComparisonOperator {
+    Eq,
+    Ne,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BooleanOperator {
+    And,
+    Or,
+}
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum IRType {
     Int,
     Float,
     String,
+    Boolean,
 }

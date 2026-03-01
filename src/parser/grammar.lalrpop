@@ -56,9 +56,16 @@ T4: BinaryOperator = {
     ">=" => BinaryOperator::Ge,
 }
 
+Expr5 = Tier<T5, Expr4>;
+
+T5: BinaryOperator = {
+    "&&" => BinaryOperator::And,
+    "||" => BinaryOperator::Or,
+}
+
 Expr: Expression = {
-    Expr4,
-    <condition:Box<Expr4>> "?" <body:Box<Expr4>> ":" <else_body:Box<Expr>> => Expression::If { <> },
+    Expr5,
+    <condition:Box<Expr5>> "?" <body:Box<Expr5>> ":" <else_body:Box<Expr>> => Expression::If { <> },
     "let" <var:Ident> "=" <val:Box<Expr>> ";" <body:Box<Expr>> => Expression::Let { <> },
 }
 

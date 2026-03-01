@@ -1,7 +1,8 @@
 use crate::{
     compiler::Compiler,
-    interpreter::representation::{IRExpr, IRType, IRValue, LValue},
-    parser::syntax::BinaryOperator,
+    interpreter::representation::{
+        ArithmeticOperator, BooleanOperator, ComparisonOperator, IRExpr, IRType, IRValue, LValue,
+    },
 };
 use std::fmt::Write;
 
@@ -10,7 +11,7 @@ pub struct CCompiler;
 impl Compiler for CCompiler {
     type Output = String;
 
-    fn compile(&self, expr: &IRValue) -> Self::Output {
+    fn compile(self, expr: &IRValue) -> Self::Output {
         let mut prelude = String::new();
         let expr = self.compile_expr(expr, &mut prelude);
         format!("#include <stdio.h>\nint main(){{{prelude}printf(\"%i\\n\",{expr});}}")
@@ -20,7 +21,7 @@ impl Compiler for CCompiler {
 impl CCompiler {
     fn write_type(&self, ty: &IRType) -> String {
         match ty {
-            IRType::Int => "int".to_string(),
+            IRType::Int | IRType::Boolean => "int".to_string(),
             IRType::Float => "float".to_string(),
             IRType::String => "char *".to_string(),
         }
@@ -53,23 +54,35 @@ impl CCompiler {
 
                 format!("{lvalue}")
             }
-            IRExpr::BinaryOperation(lhs, op, rhs) => {
+            IRExpr::Arithmetic(lhs, op, rhs) => {
                 let lhs = self.compile_expr(lhs, prelude);
                 let rhs = self.compile_expr(rhs, prelude);
                 match op {
-                    BinaryOperator::Add => format!("({lhs}+{rhs})"),
-                    BinaryOperator::Sub => format!("({lhs}-{rhs})"),
-                    BinaryOperator::Div => format!("({lhs}/{rhs})"),
-                    BinaryOperator::Mul => format!("({lhs}*{rhs})"),
-                    BinaryOperator::Mod => format!("({lhs}%{rhs})"),
-                    BinaryOperator::Eq => format!("({lhs}=={rhs})"),
-                    BinaryOperator::Ne => format!("({lhs}!={rhs})"),
-                    BinaryOperator::Le => format!("({lhs}<={rhs})"),
-                    BinaryOperator::Ge => format!("({lhs}>={rhs})"),
-                    BinaryOperator::Lt => format!("({lhs}<{rhs})"),
-                    BinaryOperator::Gt => format!("({lhs}>{rhs})"),
-                    BinaryOperator::Dot => format!("({lhs}.{rhs})"),
-                    BinaryOperator::Index => format!("({lhs}[{rhs}])"),
+                    ArithmeticOperator::Add => format!("({lhs}+{rhs})"),
+                    ArithmeticOperator::Sub => format!("({lhs}-{rhs})"),
+                    ArithmeticOperator::Div => format!("({lhs}/{rhs})"),
+                    ArithmeticOperator::Mul => format!("({lhs}*{rhs})"),
+                    ArithmeticOperator::Mod => format!("({lhs}%{rhs})"),
+                }
+            }
+            IRExpr::Comparison(lhs, op, rhs) => {
+                let lhs = self.compile_expr(lhs, prelude);
+                let rhs = self.compile_expr(rhs, prelude);
+                match op {
+                    ComparisonOperator::Eq => format!("({lhs}=={rhs})"),
+                    ComparisonOperator::Ne => format!("({lhs}!={rhs})"),
+                    ComparisonOperator::Le => format!("({lhs}<={rhs})"),
+                    ComparisonOperator::Ge => format!("({lhs}>={rhs})"),
+                    ComparisonOperator::Lt => format!("({lhs}<{rhs})"),
+                    ComparisonOperator::Gt => format!("({lhs}>{rhs})"),
+                }
+            }
+            IRExpr::Boolean(lhs, op, rhs) => {
+                let lhs = self.compile_expr(lhs, prelude);
+                let rhs = self.compile_expr(rhs, prelude);
+                match op {
+                    BooleanOperator::And => format!("({lhs}&&{rhs})"),
+                    BooleanOperator::Or => format!("({lhs}||{rhs})"),
                 }
             }
         }

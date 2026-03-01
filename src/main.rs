@@ -6,7 +6,7 @@ mod compiler;
 
 fn main() {
     let syn = parser::grammar::ProgramParser::new()
-        .parse("let x = 11.0; x == 0 ? 21 : x + x")
+        .parse("let x = 11; x == 0 || x % 2 == 1 ? 21 : x + x")
         .unwrap();
     println!("{syn:?}");
     match interpreter::interpret(syn) {

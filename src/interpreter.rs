@@ -1,8 +1,10 @@
 use std::{collections::HashMap, rc::Rc};
 
 use crate::{
-    interpreter::representation::{IRExpr, IRType, IRValue, LValue},
-    parser::syntax::Expression,
+    interpreter::representation::{
+        ArithmeticOperator, BooleanOperator, ComparisonOperator, IRExpr, IRType, IRValue, LValue,
+    },
+    parser::syntax::{BinaryOperator, Expression},
 };
 
 pub mod representation;
@@ -25,15 +27,87 @@ fn to_ir(syn: Expression, mut context: Context) -> Result<IRValue, String> {
         Expression::BinaryOperation(lhs, op, rhs) => {
             let lhs = to_ir(*lhs, context.clone())?;
             let rhs = to_ir(*rhs, context)?;
-            let ty = match (op, &lhs.1, &rhs.1) {
-                (_, IRType::Int, IRType::Int) => IRType::Int,
-                (t, l, r) => {
-                    return Err(format!(
-                        "Invalid types for operation `{t:?}`: `{l:?}` and `{r:?}`; expected two numeric types"
-                    ));
+            match (op, &lhs.1, &rhs.1) {
+                (
+                    op @ (BinaryOperator::Add
+                    | BinaryOperator::Sub
+                    | BinaryOperator::Mul
+                    | BinaryOperator::Div
+                    | BinaryOperator::Mod),
+                    ty @ IRType::Int,
+                    IRType::Int,
+                )
+                | (
+                    op @ (BinaryOperator::Add
+                    | BinaryOperator::Sub
+                    | BinaryOperator::Mul
+                    | BinaryOperator::Div
+                    | BinaryOperator::Mod),
+                    ty @ IRType::Float,
+                    IRType::Float,
+                ) => {
+                    let ty = ty.clone();
+                    Ok(IRValue(
+                        IRExpr::Arithmetic(
+                            Box::new(lhs),
+                            match op {
+                                BinaryOperator::Add => ArithmeticOperator::Add,
+                                BinaryOperator::Sub => ArithmeticOperator::Sub,
+                                BinaryOperator::Mul => ArithmeticOperator::Mul,
+                                BinaryOperator::Div => ArithmeticOperator::Div,
+                                BinaryOperator::Mod => ArithmeticOperator::Mod,
+                                _ => unreachable!(),
+                            },
+                            Box::new(rhs),
+                        ),
+                        ty,
+                    ))
                 }
-            };
-            Ok(IRExpr::BinaryOperation(Box::new(lhs), op, Box::new(rhs)).typed(ty))
+                (
+                    op @ (BinaryOperator::Eq
+                    | BinaryOperator::Ne
+                    | BinaryOperator::Lt
+                    | BinaryOperator::Le
+                    | BinaryOperator::Gt
+                    | BinaryOperator::Ge),
+                    lt,
+                    rt,
+                ) if lt == rt => Ok(IRValue(
+                    IRExpr::Comparison(
+                        Box::new(lhs),
+                        match op {
+                            BinaryOperator::Eq => ComparisonOperator::Eq,
+                            BinaryOperator::Ne => ComparisonOperator::Ne,
+                            BinaryOperator::Lt => ComparisonOperator::Lt,
+                            BinaryOperator::Le => ComparisonOperator::Le,
+                            BinaryOperator::Gt => ComparisonOperator::Gt,
+                            BinaryOperator::Ge => ComparisonOperator::Ge,
+                            _ => unreachable!(),
+                        },
+                        Box::new(rhs),
+                    ),
+                    IRType::Boolean,
+                )),
+                (
+                    op @ (BinaryOperator::And | BinaryOperator::Or),
+                    IRType::Boolean,
+                    IRType::Boolean,
+                ) => Ok(IRValue(
+                    IRExpr::Boolean(
+                        Box::new(lhs),
+                        match op {
+                            BinaryOperator::And => BooleanOperator::And,
+                            BinaryOperator::Or => BooleanOperator::Or,
+                            _ => unreachable!(),
+                        },
+                        Box::new(rhs),
+                    ),
+                    IRType::Boolean,
+                )),
+                (t, l, r) => Err(format!(
+                    "Invalid types for operation `{t:?}`: `{l:?}` and `{r:?}`"
+                )),
+            }
         }
         Expression::If {
             condition,
@@ -43,9 +117,9 @@ fn to_ir(syn: Expression, mut context: Context) -> Result<IRValue, String> {
             let condition = to_ir(*condition, context.clone())?;
             let body = to_ir(*body, context.clone())?;
             let else_body = to_ir(*else_body, context)?;
-            if condition.1 != IRType::Int {
+            if condition.1 != IRType::Boolean {
                 return Err(format!(
-                    "Expected int for ternary condition; got `{:?}`",
+                    "Expected boolean for ternary condition; got `{:?}`",
                     condition.1
                 ));
             }
@@ -71,6 +145,13 @@ fn to_ir(syn: Expression, mut context: Context) -> Result<IRValue, String> {
             let ty = val_ir.1.clone();
             Ok(IRExpr::SetLocal(new_lvalue, Box::new(val_ir), Box::new(body_ir)).typed(ty))
         }
-        Expression::FunctionCall { function, args } => todo!(),
+        Expression::FunctionCall { function, args } => {
+            let args = args
+                .into_iter()
+                .map(|arg| to_ir(arg, context.clone()))
+                .collect::<Result<Vec<IRValue>, String>>()?;
+            let func = to_ir(*function, context)?;
+            Err(format!("Expected a function; got `{func:?}`"))
+        }
     }
 }

@@ -38,4 +38,6 @@ pub enum BinaryOperator {
     Gt,
     Dot,
     Index,
+    And,
+    Or,
 }
