@@ -22,6 +22,9 @@ impl Display for LValue {
     }
 }
 
+#[derive(Debug)]
+pub struct IRValue(pub IRExpr, pub IRType);
+
 /// # Intermediate representation of a value
 ///
 /// GetLocal = access the value of a local variable or function parameter
@@ -30,14 +33,27 @@ impl Display for LValue {
 #[derive(Debug)]
 pub enum IRExpr {
     GetLocal(LValue),
-    SetLocal(LValue, Box<IRExpr>, Box<IRExpr>),
+    SetLocal(LValue, Box<IRValue>, Box<IRValue>),
     Int(i64),
     Float(f64),
     String(Rc<str>),
     If {
-        condition: Box<IRExpr>,
-        body: Box<IRExpr>,
-        else_body: Box<IRExpr>,
+        condition: Box<IRValue>,
+        body: Box<IRValue>,
+        else_body: Box<IRValue>,
     },
-    BinaryOperation(Box<IRExpr>, BinaryOperator, Box<IRExpr>),
+    BinaryOperation(Box<IRValue>, BinaryOperator, Box<IRValue>),
+}
+
+impl IRExpr {
+    pub const fn typed(self, ty: IRType) -> IRValue {
+        IRValue(self, ty)
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum IRType {
+    Int,
+    Float,
+    String,
 }
