@@ -54,7 +54,7 @@ pub enum IRExpr {
     Boolean(Box<IRValue>, BooleanOperator, Box<IRValue>),
     Function {
         params: Vec<LValue>,
-        captures: Vec<LValue>,
+        captures: Vec<(LValue, IRType)>,
         body: Box<IRValue>,
     },
     FunctionCall(Box<IRValue>, Vec<IRValue>),

@@ -158,7 +158,11 @@ fn to_ir(syn: Expression, mut context: Context) -> Result<IRValue, String> {
                 return Err(format!("Expected a function; got `{:?}`", func.1));
             };
             if inputs.len() != args.len() {
-                return Err(format!("Wrong number of arguments"));
+                return Err(format!(
+                    "Wrong number of arguments; expected `{}` but got `{}`",
+                    inputs.len(),
+                    args.len()
+                ));
             }
             for (IRValue(_, arg_type), param_type) in args.iter().zip(inputs.iter()) {
                 if param_type != arg_type {
@@ -183,9 +187,10 @@ fn to_ir(syn: Expression, mut context: Context) -> Result<IRValue, String> {
             }
             let body = to_ir(*body, new_context)?;
             let out_ty = body.1.clone();
+            let captures = find_captures(&body, &params);
             Ok(IRValue(
                 IRExpr::Function {
-                    captures: find_captures(&body, &params),
+                    captures,
                     params,
                     body: Box::new(body),
                 },
@@ -198,17 +203,17 @@ fn to_ir(syn: Expression, mut context: Context) -> Result<IRValue, String> {
     }
 }
 
-fn find_captures(body: &IRValue, params: &[LValue]) -> Vec<LValue> {
-    let mut values = HashSet::new();
+fn find_captures(body: &IRValue, params: &[LValue]) -> Vec<(LValue, IRType)> {
+    let mut values = HashMap::new();
     let mut blacklist = params.iter().copied().collect();
     fn visit_captures(
         val: &IRValue,
-        values: &mut HashSet<LValue>,
+        values: &mut HashMap<LValue, IRType>,
         blacklist: &mut HashSet<LValue>,
     ) {
         match &val.0 {
             IRExpr::GetLocal(lvalue) => {
-                values.insert(*lvalue);
+                values.insert(*lvalue, val.1.clone());
             }
             IRExpr::SetLocal(lvalue, irvalue, irvalue1) => {
                 blacklist.insert(*lvalue);
@@ -237,7 +242,7 @@ fn find_captures(body: &IRValue, params: &[LValue]) -> Vec<LValue> {
                 body,
             } => {
                 blacklist.extend(params);
-                values.extend(captures);
+                values.extend(captures.iter().cloned());
                 visit_captures(body, values, blacklist);
             }
             IRExpr::FunctionCall(irvalue, irvalues) => {
@@ -249,5 +254,8 @@ fn find_captures(body: &IRValue, params: &[LValue]) -> Vec<LValue> {
         }
     }
     visit_captures(body, &mut values, &mut blacklist);
-    values.difference(&blacklist).copied().collect()
+    values
+        .into_iter()
+        .filter(|(k, _)| !blacklist.contains(k))
+        .collect()
 }

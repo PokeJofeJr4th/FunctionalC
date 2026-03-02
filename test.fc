@@ -1,2 +1,5 @@
 let sum = (x: int, y: int) => x + y;
-sum(2, 4)
+let not = (b: (int, int) -> int) => (x: int, y: int) => b(y,x);
+let true = (x: int, y: int) => x;
+let false = (x: int, y: int) => y;
+not(true)(3,4) + 10 * true(3,4)
