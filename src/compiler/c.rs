@@ -191,8 +191,8 @@ impl CCompiler {
                 let funcname = LValue::new();
                 let lambda_ty = self.write_type(&expr.1);
 
-                let captures_ty = if captures.is_empty() {
-                    None
+                let (captures_ty, free_function) = if captures.is_empty() {
+                    (None, "free".to_string())
                 } else {
                     let captures_ty = format!("_captures_{funcname}");
 
@@ -206,7 +206,25 @@ impl CCompiler {
                         write!(captures_typedecl, "{typ} {cap};").unwrap();
                     }
                     writeln!(self.typedefs, "{captures_typedecl}}} {captures_ty};").unwrap();
-                    Some(captures_ty)
+                    let free_fn_tasks: Vec<&(LValue, IRType)> = captures
+                        .iter()
+                        .copied()
+                        .filter(|(_, ty)| ty.is_function())
+                        .collect();
+                    if free_fn_tasks.is_empty() {
+                        (Some(captures_ty), "free".to_string())
+                    } else {
+                        let free_fn_name = format!("_free{captures_ty}");
+
+                        let mut free_fn_decl =
+                            format!("void {free_fn_name}({captures_ty} *captures){{");
+                        for (cap, _) in free_fn_tasks {
+                            writeln!(free_fn_decl, "if (captures->{cap}->refcount != -1 && --captures->{cap}->refcount == 0) captures->{cap}->d(captures->{cap});").unwrap();
+                        }
+                        writeln!(self.typedefs, "{free_fn_decl}free(captures);}}").unwrap();
+
+                        (Some(captures_ty), free_fn_name)
+                    }
                 };
 
                 // define the function
@@ -261,7 +279,7 @@ impl CCompiler {
                     Some(captures_ty) => {
                         writeln!(
                             prelude,
-                            "{captures_ty} *{lambda_lv} = malloc(sizeof (*{lambda_lv}));\n{lambda_lv}->lambda.f = {funcname};\n{lambda_lv}->lambda.refcount = 1;\n{lambda_lv}->lambda.d=(void (*)({lambda_ty}))free;"
+                            "{captures_ty} *{lambda_lv} = malloc(sizeof (*{lambda_lv}));\n{lambda_lv}->lambda.f = {funcname};\n{lambda_lv}->lambda.refcount = 1;\n{lambda_lv}->lambda.d=(void (*)({lambda_ty})){free_function};"
                         )
                         .unwrap();
                         for (cap, _) in &captures {
@@ -273,7 +291,7 @@ impl CCompiler {
                     None => {
                         writeln!(
                             prelude,
-                            "{lambda_ty} {lambda_lv} = malloc(sizeof (*{lambda_lv}));\n{lambda_lv}->f = {funcname};\n{lambda_lv}->refcount = 1;\n{lambda_lv}->d=(void(*)({lambda_ty}))free;"
+                            "{lambda_ty} {lambda_lv} = malloc(sizeof (*{lambda_lv}));\n{lambda_lv}->f = {funcname};\n{lambda_lv}->refcount = 1;\n{lambda_lv}->d=(void(*)({lambda_ty})){free_function};"
                         )
                         .unwrap();
                         writeln!(

@@ -17,7 +17,3 @@ struct specific_lambda {
     int y;
 }
 ```
-
-# TODO
-
-- More complex drop functions for lambdas that capture other lambdas
