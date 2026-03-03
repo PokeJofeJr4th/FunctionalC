@@ -1,8 +1,8 @@
 use crate::compiler::{Compiler, c::CCompiler};
 
+mod compiler;
 mod interpreter;
 mod parser;
-mod compiler;
 
 fn main() {
     let syn = parser::grammar::ProgramParser::new()

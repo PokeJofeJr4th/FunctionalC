@@ -17,3 +17,9 @@ struct specific_lambda {
     int y;
 }
 ```
+
+# TODO
+
+- Generics
+- Recursion
+- IO Functions

@@ -35,11 +35,20 @@ impl Compiler for CCompiler {
     type Error = String;
 
     fn compile(mut self, expr: &IRValue) -> Result<Self::Output, Self::Error> {
+        let print_spec = match &expr.1 {
+            IRType::Int => "\"%i\"",
+            IRType::Float => "\"%f\"",
+            IRType::String => "\"\\\"%s\\\"\"",
+            IRType::Boolean => "\"%i\"",
+            IRType::Function { .. } => {
+                return Err(format!("Expected a primitive type; got `{:?}`", expr.1));
+            }
+        };
         let mut prelude = String::new();
         let mut cleanup = String::new();
         let expr = self.compile_expr(expr, &mut prelude, &mut cleanup, HashMap::new())?;
         Ok(format!(
-            "#include <stdio.h>\n#include <stdlib.h>\n{}\nint main(){{{prelude}printf(\"%i\\n\",{expr});{cleanup}}}",
+            "#include <stdio.h>\n#include <stdlib.h>\n{}\nint main(){{{prelude}printf({print_spec},{expr});{cleanup}}}",
             self.typedefs
         ))
     }
