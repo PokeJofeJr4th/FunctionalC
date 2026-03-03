@@ -181,6 +181,12 @@ impl CCompiler {
                 let IRType::Function { inputs, output } = &expr.1 else {
                     return Err(format!("Expected function type; got `{:?}`", expr.1));
                 };
+
+                let captures: Vec<&(LValue, IRType)> = captures
+                    .iter()
+                    .filter(|(c, _)| !self.constants.contains_key(c))
+                    .collect();
+
                 let output_ty = self.write_type(output);
                 let funcname = LValue::new();
                 let lambda_ty = self.write_type(&expr.1);
@@ -195,7 +201,7 @@ impl CCompiler {
                         "typedef struct {{{lambda_ty} lambda;",
                         lambda_ty = lambda_ty.replace("*", "")
                     );
-                    for (cap, typ) in captures {
+                    for (cap, typ) in &captures {
                         let typ = self.write_type(typ);
                         write!(captures_typedecl, "{typ} {cap};").unwrap();
                     }
@@ -225,7 +231,7 @@ impl CCompiler {
                     .unwrap();
                 }
                 let mut func_shadows = HashMap::new();
-                for (cap, _) in captures {
+                for (cap, _) in &captures {
                     func_shadows.insert(*cap, CompileResult::Source(format!("(captures->{cap})")));
                 }
                 // compile the function body
@@ -235,7 +241,21 @@ impl CCompiler {
                     writeln!(funcdef, "if ({body}->refcount != -1) {body}->refcount++;").unwrap();
                 }
                 writeln!(self.typedefs, "{funcdef}{func_cleanup}return {body};}}").unwrap();
+
                 let lambda_lv = LValue::new();
+
+                if captures.is_empty() {
+                    // create a static struct
+                    writeln!(
+                        self.typedefs,
+                        "{lambda_ty_trunc} {lambda_lv} = {{.f={funcname}, .refcount=-1}};",
+                        lambda_ty_trunc = lambda_ty.replace("*", "")
+                    )
+                    .unwrap();
+                    self.constants
+                        .insert(lambda_lv, CompileResult::Source(format!("(&{lambda_lv})")));
+                    return Ok(CompileResult::Source(format!("(&{lambda_lv})")));
+                }
                 // allocate the lambda and captures
                 match captures_ty {
                     Some(captures_ty) => {
@@ -244,7 +264,7 @@ impl CCompiler {
                             "{captures_ty} *{lambda_lv} = malloc(sizeof (*{lambda_lv}));\n{lambda_lv}->lambda.f = {funcname};\n{lambda_lv}->lambda.refcount = 1;\n{lambda_lv}->lambda.d=(void (*)({lambda_ty}))free;"
                         )
                         .unwrap();
-                        for (cap, _) in captures {
+                        for (cap, _) in &captures {
                             writeln!(prelude, "{lambda_lv}->{cap}={cap};").unwrap();
                         }
                         writeln!(cleanup, "if ({lambda_lv}->lambda.refcount != -1 && --{lambda_lv}->lambda.refcount == 0) {lambda_lv}->lambda.d(({lambda_ty}){lambda_lv});").unwrap();

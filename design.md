@@ -21,5 +21,3 @@ struct specific_lambda {
 # TODO
 
 - More complex drop functions for lambdas that capture other lambdas
-- Static structs for lambdas that don't actually need captures
-    - Also cut captures that are static
