@@ -10,6 +10,14 @@ Your program is an expression. When your program runs, your expression will be e
 "Hello World"
 ```
 
+Do run your program, do the following (or use your preferred C compiler):
+
+```
+cargo run -- your_program.fc main.c
+gcc main.c -o main
+./main
+```
+
 You can also do all the normal math:
 
 ```
