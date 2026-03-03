@@ -1,3 +1,4 @@
+#![warn(clippy::pedantic, clippy::nursery)]
 use std::path::PathBuf;
 
 use clap::Parser;
@@ -28,7 +29,7 @@ fn main() {
             std::fs::write(args.destination, c).unwrap();
         }
         Err(err) => {
-            println!("Error: {err}")
+            println!("Error: {err}");
         }
     }
 }

@@ -27,91 +27,7 @@ fn to_ir(syn: Expression, mut context: Context) -> Result<IRValue, String> {
         },
         Expression::Int(i) => Ok(IRExpr::Int(i).typed(IRType::Int)),
         Expression::Float(f) => Ok(IRExpr::Float(f).typed(IRType::Float)),
-        Expression::BinaryOperation(lhs, op, rhs) => {
-            let lhs = to_ir(*lhs, context.clone())?;
-            let rhs = to_ir(*rhs, context)?;
-            match (op, &lhs.1, &rhs.1) {
-                (
-                    op @ (BinaryOperator::Add
-                    | BinaryOperator::Sub
-                    | BinaryOperator::Mul
-                    | BinaryOperator::Div
-                    | BinaryOperator::Mod),
-                    ty @ IRType::Int,
-                    IRType::Int,
-                )
-                | (
-                    op @ (BinaryOperator::Add
-                    | BinaryOperator::Sub
-                    | BinaryOperator::Mul
-                    | BinaryOperator::Div
-                    | BinaryOperator::Mod),
-                    ty @ IRType::Float,
-                    IRType::Float,
-                ) => {
-                    let ty = ty.clone();
-                    Ok(IRValue(
-                        IRExpr::Arithmetic(
-                            Box::new(lhs),
-                            match op {
-                                BinaryOperator::Add => ArithmeticOperator::Add,
-                                BinaryOperator::Sub => ArithmeticOperator::Sub,
-                                BinaryOperator::Mul => ArithmeticOperator::Mul,
-                                BinaryOperator::Div => ArithmeticOperator::Div,
-                                BinaryOperator::Mod => ArithmeticOperator::Mod,
-                                _ => unreachable!(),
-                            },
-                            Box::new(rhs),
-                        ),
-                        ty,
-                    ))
-                }
-                (
-                    op @ (BinaryOperator::Eq
-                    | BinaryOperator::Ne
-                    | BinaryOperator::Lt
-                    | BinaryOperator::Le
-                    | BinaryOperator::Gt
-                    | BinaryOperator::Ge),
-                    lt,
-                    rt,
-                ) if lt == rt => Ok(IRValue(
-                    IRExpr::Comparison(
-                        Box::new(lhs),
-                        match op {
-                            BinaryOperator::Eq => ComparisonOperator::Eq,
-                            BinaryOperator::Ne => ComparisonOperator::Ne,
-                            BinaryOperator::Lt => ComparisonOperator::Lt,
-                            BinaryOperator::Le => ComparisonOperator::Le,
-                            BinaryOperator::Gt => ComparisonOperator::Gt,
-                            BinaryOperator::Ge => ComparisonOperator::Ge,
-                            _ => unreachable!(),
-                        },
-                        Box::new(rhs),
-                    ),
-                    IRType::Boolean,
-                )),
-                (
-                    op @ (BinaryOperator::And | BinaryOperator::Or),
-                    IRType::Boolean,
-                    IRType::Boolean,
-                ) => Ok(IRValue(
-                    IRExpr::Boolean(
-                        Box::new(lhs),
-                        match op {
-                            BinaryOperator::And => BooleanOperator::And,
-                            BinaryOperator::Or => BooleanOperator::Or,
-                            _ => unreachable!(),
-                        },
-                        Box::new(rhs),
-                    ),
-                    IRType::Boolean,
-                )),
-                (t, l, r) => Err(format!(
-                    "Invalid types for operation `{t:?}`: `{l:?}` and `{r:?}`"
-                )),
-            }
-        }
+        Expression::BinaryOperation(lhs, op, rhs) => binary_op_to_ir(context, *lhs, op, *rhs),
         Expression::If {
             condition,
             body,
@@ -167,8 +83,7 @@ fn to_ir(syn: Expression, mut context: Context) -> Result<IRValue, String> {
             for (IRValue(_, arg_type), param_type) in args.iter().zip(inputs.iter()) {
                 if param_type != arg_type {
                     return Err(format!(
-                        "Function type parameter mismatch; expected `{:?}` but got `{:?}`",
-                        param_type, arg_type
+                        "Function type parameter mismatch; expected `{param_type:?}` but got `{arg_type:?}`"
                     ));
                 }
             }
@@ -203,9 +118,96 @@ fn to_ir(syn: Expression, mut context: Context) -> Result<IRValue, String> {
     }
 }
 
+fn binary_op_to_ir(
+    context: HashMap<Rc<str>, (LValue, IRType)>,
+    lhs: Expression,
+    op: BinaryOperator,
+    rhs: Expression,
+) -> Result<IRValue, String> {
+    let lhs = to_ir(lhs, context.clone())?;
+    let rhs = to_ir(rhs, context)?;
+    match (op, &lhs.1, &rhs.1) {
+        (
+            op @ (BinaryOperator::Add
+            | BinaryOperator::Sub
+            | BinaryOperator::Mul
+            | BinaryOperator::Div
+            | BinaryOperator::Mod),
+            ty @ IRType::Int,
+            IRType::Int,
+        )
+        | (
+            op @ (BinaryOperator::Add
+            | BinaryOperator::Sub
+            | BinaryOperator::Mul
+            | BinaryOperator::Div
+            | BinaryOperator::Mod),
+            ty @ IRType::Float,
+            IRType::Float,
+        ) => {
+            let ty = ty.clone();
+            Ok(IRValue(
+                IRExpr::Arithmetic(
+                    Box::new(lhs),
+                    match op {
+                        BinaryOperator::Add => ArithmeticOperator::Add,
+                        BinaryOperator::Sub => ArithmeticOperator::Sub,
+                        BinaryOperator::Mul => ArithmeticOperator::Mul,
+                        BinaryOperator::Div => ArithmeticOperator::Div,
+                        BinaryOperator::Mod => ArithmeticOperator::Mod,
+                        _ => unreachable!(),
+                    },
+                    Box::new(rhs),
+                ),
+                ty,
+            ))
+        }
+        (
+            op @ (BinaryOperator::Eq
+            | BinaryOperator::Ne
+            | BinaryOperator::Lt
+            | BinaryOperator::Le
+            | BinaryOperator::Gt
+            | BinaryOperator::Ge),
+            lt,
+            rt,
+        ) if lt == rt => Ok(IRValue(
+            IRExpr::Comparison(
+                Box::new(lhs),
+                match op {
+                    BinaryOperator::Eq => ComparisonOperator::Eq,
+                    BinaryOperator::Ne => ComparisonOperator::Ne,
+                    BinaryOperator::Lt => ComparisonOperator::Lt,
+                    BinaryOperator::Le => ComparisonOperator::Le,
+                    BinaryOperator::Gt => ComparisonOperator::Gt,
+                    BinaryOperator::Ge => ComparisonOperator::Ge,
+                    _ => unreachable!(),
+                },
+                Box::new(rhs),
+            ),
+            IRType::Boolean,
+        )),
+        (op @ (BinaryOperator::And | BinaryOperator::Or), IRType::Boolean, IRType::Boolean) => {
+            Ok(IRValue(
+                IRExpr::Boolean(
+                    Box::new(lhs),
+                    match op {
+                        BinaryOperator::And => BooleanOperator::And,
+                        BinaryOperator::Or => BooleanOperator::Or,
+                        _ => unreachable!(),
+                    },
+                    Box::new(rhs),
+                ),
+                IRType::Boolean,
+            ))
+        }
+        (t, l, r) => Err(format!(
+            "Invalid types for operation `{t:?}`: `{l:?}` and `{r:?}`"
+        )),
+    }
+}
+
 fn find_captures(body: &IRValue, params: &[LValue]) -> Vec<(LValue, IRType)> {
-    let mut values = HashMap::new();
-    let mut blacklist = params.iter().copied().collect();
     fn visit_captures(
         val: &IRValue,
         values: &mut HashMap<LValue, IRType>,
@@ -253,6 +255,8 @@ fn find_captures(body: &IRValue, params: &[LValue]) -> Vec<(LValue, IRType)> {
             }
         }
     }
+    let mut values = HashMap::new();
+    let mut blacklist = params.iter().copied().collect();
     visit_captures(body, &mut values, &mut blacklist);
     values
         .into_iter()

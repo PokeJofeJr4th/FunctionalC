@@ -36,10 +36,9 @@ impl Compiler for CCompiler {
 
     fn compile(mut self, expr: &IRValue) -> Result<Self::Output, Self::Error> {
         let print_spec = match &expr.1 {
-            IRType::Int => "\"%i\"",
             IRType::Float => "\"%f\"",
             IRType::String => "\"\\\"%s\\\"\"",
-            IRType::Boolean => "\"%i\"",
+            IRType::Int | IRType::Boolean => "\"%i\"",
             IRType::Function { .. } => {
                 return Err(format!("Expected a primitive type; got `{:?}`", expr.1));
             }
@@ -66,7 +65,7 @@ impl CCompiler {
     fn short_type(&mut self, ty: &IRType) -> String {
         match ty {
             IRType::String => "str".to_string(),
-            ty => self.write_type(ty).replace("*", ""),
+            ty => self.write_type(ty).replace('*', ""),
         }
     }
 
@@ -98,7 +97,7 @@ impl CCompiler {
                     )
                     .unwrap();
                 }
-                format!("{}*", short_name)
+                format!("{short_name}*")
             }
         }
     }
@@ -186,178 +185,203 @@ impl CCompiler {
                 params,
                 body,
                 captures,
-            } => {
-                let IRType::Function { inputs, output } = &expr.1 else {
-                    return Err(format!("Expected function type; got `{:?}`", expr.1));
-                };
-
-                let captures: Vec<&(LValue, IRType)> = captures
-                    .iter()
-                    .filter(|(c, _)| !self.constants.contains_key(c))
-                    .collect();
-
-                let output_ty = self.write_type(output);
-                let funcname = LValue::new();
-                let lambda_ty = self.write_type(&expr.1);
-
-                let (captures_ty, free_function) = if captures.is_empty() {
-                    (None, "free".to_string())
-                } else {
-                    let captures_ty = format!("_captures_{funcname}");
-
-                    // create the typedef for the captures type
-                    let mut captures_typedecl = format!(
-                        "typedef struct {{{lambda_ty} lambda;",
-                        lambda_ty = lambda_ty.replace("*", "")
-                    );
-                    for (cap, typ) in &captures {
-                        let typ = self.write_type(typ);
-                        write!(captures_typedecl, "{typ} {cap};").unwrap();
-                    }
-                    writeln!(self.typedefs, "{captures_typedecl}}} {captures_ty};").unwrap();
-                    let free_fn_tasks: Vec<&(LValue, IRType)> = captures
-                        .iter()
-                        .copied()
-                        .filter(|(_, ty)| ty.is_function())
-                        .collect();
-                    if free_fn_tasks.is_empty() {
-                        (Some(captures_ty), "free".to_string())
-                    } else {
-                        let free_fn_name = format!("_free{captures_ty}");
-
-                        let mut free_fn_decl =
-                            format!("void {free_fn_name}({captures_ty} *captures){{");
-                        for (cap, _) in free_fn_tasks {
-                            writeln!(free_fn_decl, "if (captures->{cap}->refcount != -1 && --captures->{cap}->refcount == 0) captures->{cap}->d(captures->{cap});").unwrap();
-                        }
-                        writeln!(self.typedefs, "{free_fn_decl}free(captures);}}").unwrap();
-
-                        (Some(captures_ty), free_fn_name)
-                    }
-                };
-
-                // define the function
-                let mut funcdef = format!(
-                    "{output_ty} {funcname}({lambda_ty} {captures_name}",
-                    captures_name = if captures_ty.is_some() {
-                        "captures_tmp"
-                    } else {
-                        "captures"
-                    }
-                );
-                for (input, param) in inputs.iter().zip(params.iter()) {
-                    write!(funcdef, ",{} {param}", self.write_type(input)).unwrap();
-                }
-                funcdef.push_str("){");
-                let mut func_cleanup = String::new();
-                if let Some(captures_ty) = &captures_ty {
-                    write!(
-                        funcdef,
-                        "{captures_ty} *captures = ({captures_ty}*)captures_tmp;"
-                    )
-                    .unwrap();
-                }
-                let mut func_shadows = HashMap::new();
-                for (cap, _) in &captures {
-                    func_shadows.insert(*cap, CompileResult::Source(format!("(captures->{cap})")));
-                }
-                // compile the function body
-                let body =
-                    self.compile_expr(body, &mut funcdef, &mut func_cleanup, func_shadows)?;
-                if output.is_function() {
-                    writeln!(funcdef, "if ({body}->refcount != -1) {body}->refcount++;").unwrap();
-                }
-                writeln!(self.typedefs, "{funcdef}{func_cleanup}return {body};}}").unwrap();
-
-                let lambda_lv = LValue::new();
-
-                if captures.is_empty() {
-                    // create a static struct
-                    writeln!(
-                        self.typedefs,
-                        "{lambda_ty_trunc} {lambda_lv} = {{.f={funcname}, .refcount=-1}};",
-                        lambda_ty_trunc = lambda_ty.replace("*", "")
-                    )
-                    .unwrap();
-                    self.constants
-                        .insert(lambda_lv, CompileResult::Source(format!("(&{lambda_lv})")));
-                    return Ok(CompileResult::Source(format!("(&{lambda_lv})")));
-                }
-                // allocate the lambda and captures
-                match captures_ty {
-                    Some(captures_ty) => {
-                        writeln!(
-                            prelude,
-                            "{captures_ty} *{lambda_lv} = malloc(sizeof (*{lambda_lv}));\n{lambda_lv}->lambda.f = {funcname};\n{lambda_lv}->lambda.refcount = 1;\n{lambda_lv}->lambda.d=(void (*)({lambda_ty})){free_function};"
-                        )
-                        .unwrap();
-                        for (cap, _) in &captures {
-                            writeln!(prelude, "{lambda_lv}->{cap}={cap};").unwrap();
-                        }
-                        writeln!(cleanup, "if ({lambda_lv}->lambda.refcount != -1 && --{lambda_lv}->lambda.refcount == 0) {lambda_lv}->lambda.d(({lambda_ty}){lambda_lv});").unwrap();
-                        Ok(CompileResult::Source(format!("(({lambda_ty}){lambda_lv})")))
-                    }
-                    None => {
-                        writeln!(
-                            prelude,
-                            "{lambda_ty} {lambda_lv} = malloc(sizeof (*{lambda_lv}));\n{lambda_lv}->f = {funcname};\n{lambda_lv}->refcount = 1;\n{lambda_lv}->d=(void(*)({lambda_ty})){free_function};"
-                        )
-                        .unwrap();
-                        writeln!(
-                            cleanup,
-                            "if ({lambda_lv}->refcount != -1 && --{lambda_lv}->refcount == 0) {lambda_lv}->d({lambda_lv});"
-                        )
-                        .unwrap();
-                        Ok(CompileResult::LValue(lambda_lv))
-                    }
-                }
-            }
+            } => self.compile_function(expr, prelude, cleanup, params, body, captures),
             IRExpr::FunctionCall(func, args) => {
-                let IRType::Function {
-                    inputs: _,
-                    output: func_out,
-                } = &func.1
-                else {
-                    return Err(format!("Expected a fucntion type; got `{func:?}`"));
-                };
-                let args_compiled = args
-                    .iter()
-                    .map(|v| self.compile_expr(v, prelude, cleanup, shadows.clone()))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let func_lv = match self.compile_expr(func, prelude, cleanup, shadows)? {
-                    CompileResult::LValue(l) => l,
-                    CompileResult::Source(s) => {
-                        let lv = LValue::new();
-                        write!(prelude, "{} {lv} = {s};", self.write_type(&func.1)).unwrap();
-                        lv
-                    }
-                };
-                let mut funcall = format!("{func_lv}->f({func_lv},");
-                let mut first = true;
-                for arg in &args_compiled {
-                    if first {
-                        first = false;
-                    } else {
-                        funcall.push(',');
-                    }
-                    funcall.push_str(&format!("{}", arg));
-                }
-                funcall.push(')');
-                // println!("{func:?}{args:?}");
-                if func_out.is_function() {
-                    let temp_var = LValue::new();
-                    writeln!(cleanup, "if ({temp_var}->refcount != -1 && --{temp_var}->refcount == 0) {temp_var}->d({temp_var});").unwrap();
-                    writeln!(
-                        prelude,
-                        "{} {temp_var} = {funcall};",
-                        self.write_type(func_out)
-                    )
-                    .unwrap();
-                    Ok(CompileResult::LValue(temp_var))
-                } else {
-                    Ok(CompileResult::Source(funcall))
-                }
+                self.compile_function_call(prelude, cleanup, shadows, func, args)
             }
+        }
+    }
+
+    fn compile_function_call(
+        &mut self,
+        prelude: &mut String,
+        cleanup: &mut String,
+        shadows: HashMap<LValue, CompileResult>,
+        func: &IRValue,
+        args: &[IRValue],
+    ) -> Result<CompileResult, String> {
+        let IRType::Function {
+            inputs: _,
+            output: func_out,
+        } = &func.1
+        else {
+            return Err(format!("Expected a fucntion type; got `{func:?}`"));
+        };
+        let args_compiled = args
+            .iter()
+            .map(|v| self.compile_expr(v, prelude, cleanup, shadows.clone()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let func_lv = match self.compile_expr(func, prelude, cleanup, shadows)? {
+            CompileResult::LValue(l) => l,
+            CompileResult::Source(s) => {
+                let lv = LValue::new();
+                write!(prelude, "{} {lv} = {s};", self.write_type(&func.1)).unwrap();
+                lv
+            }
+        };
+        let mut funcall = format!("{func_lv}->f({func_lv},");
+        let mut first = true;
+        for arg in &args_compiled {
+            if first {
+                first = false;
+            } else {
+                funcall.push(',');
+            }
+            write!(funcall, "{arg}").unwrap();
+        }
+        funcall.push(')');
+        // println!("{func:?}{args:?}");
+        if func_out.is_function() {
+            let temp_var = LValue::new();
+            writeln!(cleanup, "if ({temp_var}->refcount != -1 && --{temp_var}->refcount == 0) {temp_var}->d({temp_var});").unwrap();
+            writeln!(
+                prelude,
+                "{} {temp_var} = {funcall};",
+                self.write_type(func_out)
+            )
+            .unwrap();
+            Ok(CompileResult::LValue(temp_var))
+        } else {
+            Ok(CompileResult::Source(funcall))
+        }
+    }
+
+    fn compile_function(
+        &mut self,
+        expr: &IRValue,
+        prelude: &mut String,
+        cleanup: &mut String,
+        params: &[LValue],
+        body: &IRValue,
+        captures: &[(LValue, IRType)],
+    ) -> Result<CompileResult, String> {
+        let IRType::Function { inputs, output } = &expr.1 else {
+            return Err(format!("Expected function type; got `{:?}`", expr.1));
+        };
+
+        let captures: Vec<&(LValue, IRType)> = captures
+            .iter()
+            .filter(|(c, _)| !self.constants.contains_key(c))
+            .collect();
+
+        let output_ty = self.write_type(output);
+        let funcname = LValue::new();
+        let lambda_ty = self.write_type(&expr.1);
+
+        let (captures_ty, free_function) = if captures.is_empty() {
+            (None, "free".to_string())
+        } else {
+            self.compile_lambda_captures_structure(&captures, funcname, &lambda_ty)
+        };
+
+        // define the function
+        let mut funcdef = format!(
+            "{output_ty} {funcname}({lambda_ty} {captures_name}",
+            captures_name = if captures_ty.is_some() {
+                "captures_tmp"
+            } else {
+                "captures"
+            }
+        );
+        for (input, param) in inputs.iter().zip(params.iter()) {
+            write!(funcdef, ",{} {param}", self.write_type(input)).unwrap();
+        }
+        funcdef.push_str("){");
+        let mut func_cleanup = String::new();
+        if let Some(captures_ty) = &captures_ty {
+            write!(
+                funcdef,
+                "{captures_ty} *captures = ({captures_ty}*)captures_tmp;"
+            )
+            .unwrap();
+        }
+        let mut func_shadows = HashMap::new();
+        for (cap, _) in &captures {
+            func_shadows.insert(*cap, CompileResult::Source(format!("(captures->{cap})")));
+        }
+        // compile the function body
+        let body = self.compile_expr(body, &mut funcdef, &mut func_cleanup, func_shadows)?;
+        if output.is_function() {
+            writeln!(funcdef, "if ({body}->refcount != -1) {body}->refcount++;").unwrap();
+        }
+        writeln!(self.typedefs, "{funcdef}{func_cleanup}return {body};}}").unwrap();
+
+        let lambda_lv = LValue::new();
+
+        if captures.is_empty() {
+            // create a static struct
+            writeln!(
+                self.typedefs,
+                "{lambda_ty_trunc} {lambda_lv} = {{.f={funcname}, .refcount=-1}};",
+                lambda_ty_trunc = lambda_ty.replace('*', "")
+            )
+            .unwrap();
+            self.constants
+                .insert(lambda_lv, CompileResult::Source(format!("(&{lambda_lv})")));
+            return Ok(CompileResult::Source(format!("(&{lambda_lv})")));
+        }
+        // allocate the lambda and captures
+        if let Some(captures_ty) = captures_ty {
+            writeln!(
+                prelude,
+                "{captures_ty} *{lambda_lv} = malloc(sizeof (*{lambda_lv}));\n{lambda_lv}->lambda.f = {funcname};\n{lambda_lv}->lambda.refcount = 1;\n{lambda_lv}->lambda.d=(void (*)({lambda_ty})){free_function};"
+            )
+            .unwrap();
+            for (cap, _) in &captures {
+                writeln!(prelude, "{lambda_lv}->{cap}={cap};").unwrap();
+            }
+            writeln!(cleanup, "if ({lambda_lv}->lambda.refcount != -1 && --{lambda_lv}->lambda.refcount == 0) {lambda_lv}->lambda.d(({lambda_ty}){lambda_lv});").unwrap();
+            Ok(CompileResult::Source(format!("(({lambda_ty}){lambda_lv})")))
+        } else {
+            writeln!(
+                prelude,
+                "{lambda_ty} {lambda_lv} = malloc(sizeof (*{lambda_lv}));\n{lambda_lv}->f = {funcname};\n{lambda_lv}->refcount = 1;\n{lambda_lv}->d=(void(*)({lambda_ty})){free_function};"
+            )
+            .unwrap();
+            writeln!(
+                cleanup,
+                "if ({lambda_lv}->refcount != -1 && --{lambda_lv}->refcount == 0) {lambda_lv}->d({lambda_lv});"
+            )
+            .unwrap();
+            Ok(CompileResult::LValue(lambda_lv))
+        }
+    }
+
+    fn compile_lambda_captures_structure(
+        &mut self,
+        captures: &Vec<&(LValue, IRType)>,
+        funcname: LValue,
+        lambda_ty: &str,
+    ) -> (Option<String>, String) {
+        let captures_ty = format!("_captures_{funcname}");
+
+        // create the typedef for the captures type
+        let mut captures_typedecl = format!(
+            "typedef struct {{{lambda_ty} lambda;",
+            lambda_ty = lambda_ty.replace('*', "")
+        );
+        for (cap, typ) in captures {
+            let typ = self.write_type(typ);
+            write!(captures_typedecl, "{typ} {cap};").unwrap();
+        }
+        writeln!(self.typedefs, "{captures_typedecl}}} {captures_ty};").unwrap();
+        let free_fn_tasks: Vec<&(LValue, IRType)> = captures
+            .iter()
+            .copied()
+            .filter(|(_, ty)| ty.is_function())
+            .collect();
+        if free_fn_tasks.is_empty() {
+            (Some(captures_ty), "free".to_string())
+        } else {
+            let free_fn_name = format!("_free{captures_ty}");
+
+            let mut free_fn_decl = format!("void {free_fn_name}({captures_ty} *captures){{");
+            for (cap, _) in free_fn_tasks {
+                writeln!(free_fn_decl, "if (captures->{cap}->refcount != -1 && --captures->{cap}->refcount == 0) captures->{cap}->d(captures->{cap});").unwrap();
+            }
+            writeln!(self.typedefs, "{free_fn_decl}free(captures);}}").unwrap();
+
+            (Some(captures_ty), free_fn_name)
         }
     }
 }

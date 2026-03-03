@@ -23,3 +23,5 @@ struct specific_lambda {
 - Generics
 - Recursion
 - IO Functions
+- Structs
+- Type aliases

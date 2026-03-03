@@ -25,7 +25,7 @@ impl Display for LValue {
 
 impl Debug for LValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self)
+        write!(f, "{self}")
     }
 }
 
@@ -34,8 +34,8 @@ pub struct IRValue(pub IRExpr, pub IRType);
 
 /// # Intermediate representation of a value
 ///
-/// GetLocal = access the value of a local variable or function parameter
-/// SetLocal = `let` block
+/// `GetLocal` = access the value of a local variable or function parameter
+/// `SetLocal` = `let` block
 /// Simple literal values
 #[derive(Debug)]
 pub enum IRExpr {
@@ -98,8 +98,8 @@ pub enum IRType {
     String,
     Boolean,
     Function {
-        inputs: Vec<IRType>,
-        output: Box<IRType>,
+        inputs: Vec<Self>,
+        output: Box<Self>,
     },
 }
 
