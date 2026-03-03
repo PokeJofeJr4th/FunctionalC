@@ -36,9 +36,10 @@ impl Compiler for CCompiler {
 
     fn compile(mut self, expr: &IRValue) -> Result<Self::Output, Self::Error> {
         let mut prelude = String::new();
-        let expr = self.compile_expr(expr, &mut prelude)?;
+        let mut cleanup = String::new();
+        let expr = self.compile_expr(expr, &mut prelude, &mut cleanup, HashMap::new())?;
         Ok(format!(
-            "#include <stdio.h>\n#include <stdlib.h>\n{}\nint main(){{{prelude}printf(\"%i\\n\",{expr});}}",
+            "#include <stdio.h>\n#include <stdlib.h>\n{}\nint main(){{{prelude}printf(\"%i\\n\",{expr});{cleanup}}}",
             self.typedefs
         ))
     }
@@ -97,25 +98,27 @@ impl CCompiler {
         &mut self,
         expr: &IRValue,
         prelude: &mut String,
+        cleanup: &mut String,
+        mut shadows: HashMap<LValue, CompileResult>,
     ) -> Result<CompileResult, String> {
         match &expr.0 {
             IRExpr::GetLocal(lvalue) => Ok(self
                 .constants
                 .get(lvalue)
+                .or_else(|| shadows.get(lvalue))
                 .cloned()
                 .unwrap_or(CompileResult::LValue(*lvalue))),
             IRExpr::SetLocal(lvalue, value, body) => {
-                let ty = value.1.clone();
-                let val = self.compile_expr(value, prelude)?;
+                let val = self.compile_expr(value, prelude, cleanup, shadows.clone())?;
                 match val {
                     CompileResult::LValue(_) => {
-                        self.constants.insert(*lvalue, val);
+                        shadows.insert(*lvalue, val);
                     }
                     CompileResult::Source(val) => {
-                        write!(prelude, "{} {lvalue}={val};", self.write_type(&ty)).unwrap();
+                        write!(prelude, "{} {lvalue}={val};", self.write_type(&value.1)).unwrap();
                     }
                 }
-                self.compile_expr(body, prelude)
+                self.compile_expr(body, prelude, cleanup, shadows)
             }
             IRExpr::Int(i) => Ok(CompileResult::Source(format!("{i}"))),
             IRExpr::Float(f) => Ok(CompileResult::Source(format!("{f}"))),
@@ -125,19 +128,23 @@ impl CCompiler {
                 body,
                 else_body,
             } => {
-                let cond = self.compile_expr(condition, prelude)?;
+                let cond = self.compile_expr(condition, prelude, cleanup, shadows.clone())?;
                 let mut body_prelude = String::new();
-                let body = self.compile_expr(body, &mut body_prelude)?;
+                let mut body_cleanup = String::new();
+                let body =
+                    self.compile_expr(body, &mut body_prelude, &mut body_cleanup, shadows.clone())?;
                 let mut else_prelude = String::new();
-                let else_body = self.compile_expr(else_body, &mut else_prelude)?;
+                let mut else_cleanup = String::new();
+                let else_body =
+                    self.compile_expr(else_body, &mut else_prelude, &mut else_cleanup, shadows)?;
                 let lvalue = LValue::new();
-                write!(prelude, "{} {lvalue};if({cond}){{{body_prelude}{lvalue}={body};}}else{{{else_prelude}{lvalue}={else_body};}}", self.write_type(&expr.1)).unwrap();
+                write!(prelude, "{} {lvalue};if({cond}){{{body_prelude}{lvalue}={body};{body_cleanup}}}else{{{else_prelude}{lvalue}={else_body};{else_cleanup}}}", self.write_type(&expr.1)).unwrap();
 
                 Ok(CompileResult::LValue(lvalue))
             }
             IRExpr::Arithmetic(lhs, op, rhs) => {
-                let lhs = self.compile_expr(lhs, prelude)?;
-                let rhs = self.compile_expr(rhs, prelude)?;
+                let lhs = self.compile_expr(lhs, prelude, cleanup, shadows.clone())?;
+                let rhs = self.compile_expr(rhs, prelude, cleanup, shadows)?;
                 match op {
                     ArithmeticOperator::Add => Ok(CompileResult::Source(format!("({lhs}+{rhs})"))),
                     ArithmeticOperator::Sub => Ok(CompileResult::Source(format!("({lhs}-{rhs})"))),
@@ -147,8 +154,8 @@ impl CCompiler {
                 }
             }
             IRExpr::Comparison(lhs, op, rhs) => {
-                let lhs = self.compile_expr(lhs, prelude)?;
-                let rhs = self.compile_expr(rhs, prelude)?;
+                let lhs = self.compile_expr(lhs, prelude, cleanup, shadows.clone())?;
+                let rhs = self.compile_expr(rhs, prelude, cleanup, shadows)?;
                 match op {
                     ComparisonOperator::Eq => Ok(CompileResult::Source(format!("({lhs}=={rhs})"))),
                     ComparisonOperator::Ne => Ok(CompileResult::Source(format!("({lhs}!={rhs})"))),
@@ -159,8 +166,8 @@ impl CCompiler {
                 }
             }
             IRExpr::Boolean(lhs, op, rhs) => {
-                let lhs = self.compile_expr(lhs, prelude)?;
-                let rhs = self.compile_expr(rhs, prelude)?;
+                let lhs = self.compile_expr(lhs, prelude, cleanup, shadows.clone())?;
+                let rhs = self.compile_expr(rhs, prelude, cleanup, shadows)?;
                 match op {
                     BooleanOperator::And => Ok(CompileResult::Source(format!("({lhs}&&{rhs})"))),
                     BooleanOperator::Or => Ok(CompileResult::Source(format!("({lhs}||{rhs})"))),
@@ -208,11 +215,8 @@ impl CCompiler {
                 for (input, param) in inputs.iter().zip(params.iter()) {
                     write!(funcdef, ",{} {param}", self.write_type(input)).unwrap();
                 }
-                for (lv, _) in captures {
-                    self.constants
-                        .insert(*lv, CompileResult::Source(format!("(captures->{lv})")));
-                }
                 funcdef.push_str("){");
+                let mut func_cleanup = String::new();
                 if let Some(captures_ty) = &captures_ty {
                     write!(
                         funcdef,
@@ -220,29 +224,41 @@ impl CCompiler {
                     )
                     .unwrap();
                 }
+                let mut func_shadows = HashMap::new();
+                for (cap, _) in captures {
+                    func_shadows.insert(*cap, CompileResult::Source(format!("(captures->{cap})")));
+                }
                 // compile the function body
-                let body = self.compile_expr(body, &mut funcdef)?;
-                writeln!(self.typedefs, "{funcdef}return {body};}}").unwrap();
+                let body =
+                    self.compile_expr(body, &mut funcdef, &mut func_cleanup, func_shadows)?;
+                if output.is_function() {
+                    writeln!(funcdef, "if ({body}->refcount != -1) {body}->refcount++;").unwrap();
+                }
+                writeln!(self.typedefs, "{funcdef}{func_cleanup}return {body};}}").unwrap();
                 let lambda_lv = LValue::new();
                 // allocate the lambda and captures
                 match captures_ty {
                     Some(captures_ty) => {
                         writeln!(
                             prelude,
-                            "{captures_ty} *{lambda_lv} = malloc(sizeof (*{lambda_lv}));\n{lambda_lv}->lambda.f = {funcname};\n{lambda_lv}->lambda.refcount = 1;"
+                            "{captures_ty} *{lambda_lv} = malloc(sizeof (*{lambda_lv}));\n{lambda_lv}->lambda.f = {funcname};\n{lambda_lv}->lambda.refcount = 1;\n{lambda_lv}->lambda.d=(void (*)({lambda_ty}))free;"
                         )
                         .unwrap();
                         for (cap, _) in captures {
                             writeln!(prelude, "{lambda_lv}->{cap}={cap};").unwrap();
                         }
-                        Ok(CompileResult::Source(format!(
-                            "(({lambda_ty}){lambda_lv})"
-                        )))
+                        writeln!(cleanup, "if ({lambda_lv}->lambda.refcount != -1 && --{lambda_lv}->lambda.refcount == 0) {lambda_lv}->lambda.d(({lambda_ty}){lambda_lv});").unwrap();
+                        Ok(CompileResult::Source(format!("(({lambda_ty}){lambda_lv})")))
                     }
                     None => {
                         writeln!(
                             prelude,
-                            "{lambda_ty} {lambda_lv} = malloc(sizeof (*{lambda_lv}));\n{lambda_lv}->f = {funcname};\n{lambda_lv}->refcount = 1;"
+                            "{lambda_ty} {lambda_lv} = malloc(sizeof (*{lambda_lv}));\n{lambda_lv}->f = {funcname};\n{lambda_lv}->refcount = 1;\n{lambda_lv}->d=(void(*)({lambda_ty}))free;"
+                        )
+                        .unwrap();
+                        writeln!(
+                            cleanup,
+                            "if ({lambda_lv}->refcount != -1 && --{lambda_lv}->refcount == 0) {lambda_lv}->d({lambda_lv});"
                         )
                         .unwrap();
                         Ok(CompileResult::LValue(lambda_lv))
@@ -250,19 +266,26 @@ impl CCompiler {
                 }
             }
             IRExpr::FunctionCall(func, args) => {
-                let func_compiled = match self.compile_expr(func, prelude)? {
-                    CompileResult::LValue(l) => CompileResult::LValue(l),
-                    CompileResult::Source(s) => {
-                        let lv = LValue::new();
-                        write!(prelude, "{} {lv} = {s};", self.write_type(&func.1)).unwrap();
-                        CompileResult::LValue(lv)
-                    }
+                let IRType::Function {
+                    inputs: _,
+                    output: func_out,
+                } = &func.1
+                else {
+                    return Err(format!("Expected a fucntion type; got `{func:?}`"));
                 };
                 let args_compiled = args
                     .iter()
-                    .map(|v| self.compile_expr(v, prelude))
+                    .map(|v| self.compile_expr(v, prelude, cleanup, shadows.clone()))
                     .collect::<Result<Vec<_>, _>>()?;
-                let mut funcall = format!("{}->f({},", func_compiled, func_compiled);
+                let func_lv = match self.compile_expr(func, prelude, cleanup, shadows)? {
+                    CompileResult::LValue(l) => l,
+                    CompileResult::Source(s) => {
+                        let lv = LValue::new();
+                        write!(prelude, "{} {lv} = {s};", self.write_type(&func.1)).unwrap();
+                        lv
+                    }
+                };
+                let mut funcall = format!("{func_lv}->f({func_lv},");
                 let mut first = true;
                 for arg in &args_compiled {
                     if first {
@@ -274,7 +297,19 @@ impl CCompiler {
                 }
                 funcall.push(')');
                 // println!("{func:?}{args:?}");
-                Ok(CompileResult::Source(funcall))
+                if func_out.is_function() {
+                    let temp_var = LValue::new();
+                    writeln!(cleanup, "if ({temp_var}->refcount != -1 && --{temp_var}->refcount == 0) {temp_var}->d({temp_var});").unwrap();
+                    writeln!(
+                        prelude,
+                        "{} {temp_var} = {funcall};",
+                        self.write_type(func_out)
+                    )
+                    .unwrap();
+                    Ok(CompileResult::LValue(temp_var))
+                } else {
+                    Ok(CompileResult::Source(funcall))
+                }
             }
         }
     }

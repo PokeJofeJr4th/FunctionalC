@@ -102,3 +102,9 @@ pub enum IRType {
         output: Box<IRType>,
     },
 }
+
+impl IRType {
+    pub const fn is_function(&self) -> bool {
+        matches!(self, Self::Function { .. })
+    }
+}
