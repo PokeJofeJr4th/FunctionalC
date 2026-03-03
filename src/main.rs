@@ -1,5 +1,5 @@
 #![warn(clippy::pedantic, clippy::nursery)]
-use std::path::PathBuf;
+use std::{path::PathBuf, process::ExitCode};
 
 use clap::Parser;
 
@@ -15,21 +15,45 @@ struct Args {
     destination: PathBuf,
 }
 
-fn main() {
+fn main() -> ExitCode {
     let args = Args::parse();
 
-    let src = std::fs::read_to_string(args.src).unwrap();
+    let src = match std::fs::read_to_string(args.src) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
 
-    let syn = parser::grammar::ProgramParser::new().parse(&src).unwrap();
+    let syn = match parser::grammar::ProgramParser::new().parse(&src) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     // println!("{syn:#?}");
-    match interpreter::interpret(syn) {
-        Ok(res) => {
-            // println!("{res:#?}");
-            let c = CCompiler::new().compile(&res).unwrap();
-            std::fs::write(args.destination, c).unwrap();
-        }
+    let ir = match interpreter::interpret(syn) {
+        Ok(ir) => ir,
         Err(err) => {
-            println!("Error: {err}");
+            eprintln!("Error: {err}");
+            return ExitCode::FAILURE;
         }
+    };
+    // println!("{res:#?}");
+    let compiled = match CCompiler::new().compile(&ir) {
+        Ok(c) => c,
+        Err(err) => {
+            eprintln!("Error: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if let Err(err) = std::fs::write(args.destination, compiled) {
+        eprintln!("Error: {err}");
+        return ExitCode::FAILURE;
     }
+
+    ExitCode::SUCCESS
 }
