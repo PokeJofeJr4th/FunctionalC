@@ -1,4 +1,3 @@
-let sum = (x: int, y: int) => x + y;
 let not = (b: (int, int) -> int) => (x: int, y: int) => b(y,x);
 let true = (x: int, y: int) => x;
 let false = (x: int, y: int) => y;
