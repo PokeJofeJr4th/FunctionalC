@@ -99,7 +99,41 @@ impl Compiler for CCompiler {
                 output: Box::new(monad_ty),
             };
             let func_ty_name = self.write_type(&func_ty);
-            writeln!(self.typedefs, "typedef struct _writeLine_captures {{{monad_ty_name_short} lambda;char *str;}} _writeLine_captures;\nvoid writeLine_inner({monad_ty_name} captures){{printf(\"%s\\n\", ((_writeLine_captures *)captures)->str);}}\n{monad_ty_name} {wl}(char *str){{\n_writeLine_captures *wl = malloc(sizeof(*wl));\nwl->lambda.f=writeLine_inner;\nwl->lambda.d=NULL;\nwl->lambda.refcount=1;\nwl->str=str;\nreturn (_io_void*)wl;\n}}\n{monad_ty_name} _writeLine_lambda({func_ty_name} _, char *str){{\n_writeLine_captures *wl = malloc(sizeof(*wl));\nwl->lambda.f=writeLine_inner;\nwl->lambda.d=NULL;\nwl->lambda.refcount=1;\nwl->str=str;\nreturn (_io_void*)wl;\n}}\n{func_ty_name_short} {wls} = {{.f=_writeLine_lambda, .refcount=-1}};", wl=self.write_line_func, wls=self.write_line_struct,monad_ty_name_short = monad_ty_name.replace('*', ""), func_ty_name_short = func_ty_name.replace('*', "")).unwrap();
+            let str_lv = LValue::new();
+            let wl_inner = LValue::new();
+            let (caps, free_fn) = self.compile_lambda_captures_structure(
+                &[(str_lv, IRType::String)],
+                wl_inner,
+                &monad_ty_name,
+            );
+            writeln!(
+                self.typedefs,
+                "
+void writeLine_inner({monad_ty_name} captures){{
+    printf(\"%s\\n\", (({caps} *)captures)->{str_lv});
+}}
+{monad_ty_name} {wl}(char *str){{
+    {caps} *wl = malloc(sizeof(*wl));
+    wl->lambda.f=writeLine_inner;
+    wl->lambda.d={free_fn};
+    wl->lambda.refcount=1;
+    wl->{str_lv}=str;
+    return (_io_void*)wl;
+}}
+{monad_ty_name} _writeLine_lambda({func_ty_name} _, char *str){{
+    {caps} *wl = malloc(sizeof(*wl));
+    wl->lambda.f=writeLine_inner;
+    wl->lambda.d={free_fn};
+    wl->lambda.refcount=1;
+    wl->{str_lv}=str;
+    return (_io_void*)wl;
+}}
+{func_ty_name_short} {wls} = {{.f=_writeLine_lambda, .refcount=-1}};",
+                wl = self.write_line_func,
+                wls = self.write_line_struct,
+                func_ty_name_short = func_ty_name.replace('*', "")
+            )
+            .unwrap();
         }
         if is_monad {
             if print_spec.is_empty() {
@@ -573,7 +607,7 @@ void {inner_lv}({io_monad} c) {{
                     write!(funcall, "{arg}").unwrap();
                 }
                 funcall.push(')');
-                if func_out.is_function() {
+                if func_out.is_function() || func_out.is_io_monad() {
                     let temp_var = LValue::new();
                     writeln!(cleanup, "if ({temp_var}->refcount != -1 && --{temp_var}->refcount == 0) {temp_var}->d({temp_var});").unwrap();
                     writeln!(
@@ -599,7 +633,7 @@ void {inner_lv}({io_monad} c) {{
         }
         funcall.push(')');
         // println!("{func:?}{args:?}");
-        if func_out.is_function() {
+        if func_out.is_function() || func_out.is_io_monad() {
             let temp_var = LValue::new();
             writeln!(cleanup, "if ({temp_var}->refcount != -1 && --{temp_var}->refcount == 0) {temp_var}->d({temp_var});").unwrap();
             writeln!(
@@ -641,7 +675,7 @@ void {inner_lv}({io_monad} c) {{
         let lambda_ty = self.write_type(expr.type_hint());
 
         let (captures_ty, free_function) = if captures.is_empty() {
-            (None, "free".to_string())
+            (None, format!("(void (*)({lambda_ty}))free"))
         } else {
             let (ty, f) = self.compile_lambda_captures_structure(&captures, funcname, &lambda_ty);
             (Some(ty), f)
@@ -667,7 +701,7 @@ void {inner_lv}({io_monad} c) {{
         }
         // compile the function body
         let body = self.compile_expr(body, &mut func_body, &mut func_cleanup, func_shadows)?;
-        if output.is_function() {
+        if output.is_function() || output.is_io_monad() {
             writeln!(func_body, "if ({body}->refcount != -1) {body}->refcount++;").unwrap();
         }
         writeln!(
@@ -696,7 +730,7 @@ void {inner_lv}({io_monad} c) {{
         if let Some(captures_ty) = captures_ty {
             writeln!(
                 prelude,
-                "{captures_ty} *{lambda_lv} = malloc(sizeof (*{lambda_lv}));\n{lambda_lv}->lambda.f = {funcname};\n{lambda_lv}->lambda.refcount = 1;\n{lambda_lv}->lambda.d=(void (*)({lambda_ty})){free_function};"
+                "{captures_ty} *{lambda_lv} = malloc(sizeof (*{lambda_lv}));\n{lambda_lv}->lambda.f = {funcname};\n{lambda_lv}->lambda.refcount = 1;\n{lambda_lv}->lambda.d={free_function};"
             )
             .unwrap();
             for (cap, _) in &captures {
@@ -709,7 +743,7 @@ void {inner_lv}({io_monad} c) {{
         } else {
             writeln!(
                 prelude,
-                "{lambda_ty} {lambda_lv} = malloc(sizeof (*{lambda_lv}));\n{lambda_lv}->f = {funcname};\n{lambda_lv}->refcount = 1;\n{lambda_lv}->d=(void(*)({lambda_ty})){free_function};"
+                "{lambda_ty} {lambda_lv} = malloc(sizeof (*{lambda_lv}));\n{lambda_lv}->f = {funcname};\n{lambda_lv}->refcount = 1;\n{lambda_lv}->d={free_function};"
             )
             .unwrap();
             writeln!(
@@ -788,8 +822,10 @@ void {inner_lv}({io_monad} c) {{
             write!(captures_typedecl, "{typ} {cap};").unwrap();
         }
         writeln!(self.typedefs, "{captures_typedecl}}} {captures_ty};").unwrap();
-        let free_fn_tasks: Vec<&(LValue, IRType)> =
-            captures.iter().filter(|(_, ty)| ty.is_function()).collect();
+        let free_fn_tasks: Vec<&(LValue, IRType)> = captures
+            .iter()
+            .filter(|(_, ty)| ty.is_function() || ty.is_io_monad())
+            .collect();
         if free_fn_tasks.is_empty() {
             (captures_ty, format!("(void (*)({lambda_ty}))free"))
         } else {
@@ -801,7 +837,8 @@ void {inner_lv}({io_monad} c) {{
             }
             writeln!(self.typedefs, "{free_fn_decl}free(captures);}}").unwrap();
 
-            (captures_ty, free_fn_name)
+            let free_expr = format!("(void (*)({lambda_ty}))({free_fn_name})");
+            (captures_ty, free_expr)
         }
     }
 }
