@@ -1,7 +1,8 @@
 use crate::{
     compiler::Compiler,
     interpreter::representation::{
-        ArithmeticOperator, BooleanOperator, ComparisonOperator, IRExpr, IRType, IRValue, LValue,
+        ArithmeticOperator, BooleanOperator, Builtin, ComparisonOperator, IRExpr, IRType, IRValue,
+        LValue,
     },
 };
 use std::{
@@ -13,6 +14,12 @@ pub struct CCompiler {
     constants: HashMap<LValue, CompileResult>,
     typedecls: HashSet<IRType>,
     typedefs: String,
+    funcdefs: String,
+    builtins: HashSet<Builtin>,
+    return_struct: LValue,
+    return_func: LValue,
+    write_line_struct: LValue,
+    write_line_func: LValue,
 }
 
 #[derive(Clone)]
@@ -48,21 +55,70 @@ impl Compiler for CCompiler {
     type Error = String;
 
     fn compile(mut self, expr: &IRValue) -> Result<Self::Output, Self::Error> {
-        let print_spec = match &expr.1 {
-            IRType::Float => "\"%f\"",
-            IRType::String => "\"\\\"%s\\\"\"",
-            IRType::Int | IRType::Boolean => "\"%i\"",
+        let (print_spec, is_monad) = match &expr.type_hint() {
+            IRType::Float => ("\"%f\"", false),
+            IRType::String => ("\"\\\"%s\\\"\"", false),
+            IRType::Int | IRType::Boolean => ("\"%i\"", false),
+            IRType::IOMonad(Some(ty)) => (
+                match **ty {
+                    IRType::Float => "\"%f\"",
+                    IRType::String => "\"%s\"",
+                    IRType::Int | IRType::Boolean => "\"%i\"",
+                    _ => return Err(format!("Expected a primitive type; got `{ty:?}`")),
+                },
+                true,
+            ),
+            IRType::IOMonad(None) => ("", true),
             IRType::Function { .. } => {
-                return Err(format!("Expected a primitive type; got `{:?}`", expr.1));
+                return Err(format!(
+                    "Expected a primitive type; got `{:?}`",
+                    expr.type_hint()
+                ));
             }
         };
         let mut prelude = String::new();
         let mut cleanup = String::new();
+        let expr_type = self.write_type(expr.type_hint());
         let expr = self.compile_expr(expr, &mut prelude, &mut cleanup, HashMap::new())?;
-        Ok(format!(
-            "#include <stdio.h>\n#include <stdlib.h>\n{}\nint main(){{{prelude}printf({print_spec},{expr});{cleanup}}}",
-            self.typedefs
-        ))
+        if self.builtins.contains(&Builtin::ReadLine) {
+            let lv = LValue::new();
+            let monad_ty = self.write_type(&IRType::IOMonad(Some(Box::new(IRType::String))));
+            writeln!(
+                self.typedefs,
+                "{getline}char *{lv}({monad_ty} _) {{size_t size; char *line=NULL; getline(&line, &size, stdin);return line;}}{monad_ty_short} readLine = {{.f={lv}, .refcount=-1}};",
+                monad_ty_short=monad_ty.replace('*', ""),
+                getline=include_str!("../getline")
+            )
+            .unwrap();
+        }
+        if self.builtins.contains(&Builtin::WriteLine) {
+            let monad_ty = IRType::IOMonad(None);
+            let monad_ty_name = self.write_type(&monad_ty);
+            let func_ty = IRType::Function {
+                inputs: vec![IRType::String],
+                output: Box::new(monad_ty),
+            };
+            let func_ty_name = self.write_type(&func_ty);
+            writeln!(self.typedefs, "typedef struct _writeLine_captures {{{monad_ty_name_short} lambda;char *str;}} _writeLine_captures;\nvoid writeLine_inner({monad_ty_name} captures){{printf(\"%s\", ((_writeLine_captures *)captures)->str);}}\n{monad_ty_name} {wl}(char *str){{\n_writeLine_captures *wl = malloc(sizeof(*wl));\nwl->lambda.f=writeLine_inner;\nwl->lambda.d=NULL;\nwl->lambda.refcount=1;\nwl->str=str;\nreturn (_io_void*)wl;\n}}\n{monad_ty_name} _writeLine_lambda({func_ty_name} _, char *str){{\n_writeLine_captures *wl = malloc(sizeof(*wl));\nwl->lambda.f=writeLine_inner;\nwl->lambda.d=NULL;\nwl->lambda.refcount=1;\nwl->str=str;\nreturn (_io_void*)wl;\n}}\n{func_ty_name_short} {wls} = {{.f=_writeLine_lambda, .refcount=-1}};", wl=self.write_line_func, wls=self.write_line_struct,monad_ty_name_short = monad_ty_name.replace('*', ""), func_ty_name_short = func_ty_name.replace('*', "")).unwrap();
+        }
+        if is_monad {
+            if print_spec.is_empty() {
+                Ok(format!(
+                    "#include <stdio.h>\n#include <stdlib.h>\n{}{}\nint main(){{{prelude}{expr_type} _monad = {expr};_monad->f(_monad);{cleanup}}}",
+                    self.typedefs, self.funcdefs
+                ))
+            } else {
+                Ok(format!(
+                    "#include <stdio.h>\n#include <stdlib.h>\n{}{}\nint main(){{{prelude}{expr_type} _monad = {expr};printf({print_spec},_monad->f(_monad));{cleanup}}}",
+                    self.typedefs, self.funcdefs
+                ))
+            }
+        } else {
+            Ok(format!(
+                "#include <stdio.h>\n#include <stdlib.h>\n{}{}\nint main(){{{prelude}printf({print_spec},{expr});{cleanup}}}",
+                self.typedefs, self.funcdefs
+            ))
+        }
     }
 }
 
@@ -72,6 +128,12 @@ impl CCompiler {
             constants: HashMap::new(),
             typedecls: HashSet::new(),
             typedefs: String::new(),
+            funcdefs: String::new(),
+            builtins: HashSet::new(),
+            return_struct: LValue::new(),
+            return_func: LValue::new(),
+            write_line_struct: LValue::new(),
+            write_line_func: LValue::new(),
         }
     }
 
@@ -112,6 +174,21 @@ impl CCompiler {
                 }
                 format!("{short_name}*")
             }
+            IRType::IOMonad(t) => {
+                let output_ty = t
+                    .as_ref()
+                    .map_or_else(|| "void".to_string(), |t| self.write_type(t));
+                let short_name = format!(
+                    "_io_{}",
+                    t.as_ref()
+                        .map_or_else(|| "void".to_string(), |t| self.short_type(t))
+                );
+                if !self.typedecls.contains(ty) {
+                    self.typedecls.insert(ty.clone());
+                    writeln!(self.typedefs, "typedef struct {short_name} {{{output_ty} (*f)(struct {short_name}*); void(*d)(struct {short_name}*); int refcount;}} {short_name};").unwrap();
+                }
+                format!("{short_name}*")
+            }
         }
     }
 
@@ -122,7 +199,7 @@ impl CCompiler {
         cleanup: &mut String,
         mut shadows: HashMap<LValue, CompileResult>,
     ) -> Result<CompileResult, String> {
-        match &expr.0 {
+        match &expr.expr() {
             IRExpr::GetLocal(lvalue) => Ok(self
                 .constants
                 .get(lvalue)
@@ -136,7 +213,12 @@ impl CCompiler {
                         shadows.insert(*lvalue, val);
                     }
                     CompileResult::Computation(val) => {
-                        write!(prelude, "{} {lvalue}={val};", self.write_type(&value.1)).unwrap();
+                        write!(
+                            prelude,
+                            "{} {lvalue}={val};",
+                            self.write_type(value.type_hint())
+                        )
+                        .unwrap();
                     }
                 }
                 self.compile_expr(body, prelude, cleanup, shadows)
@@ -150,49 +232,10 @@ impl CCompiler {
                 else_body,
             } => self.compile_if_else(expr, prelude, cleanup, shadows, condition, body, else_body),
             IRExpr::Arithmetic(lhs, op, rhs) => {
-                let lhs = self.compile_expr(lhs, prelude, cleanup, shadows.clone())?;
-                let rhs = self.compile_expr(rhs, prelude, cleanup, shadows)?;
-                match op {
-                    ArithmeticOperator::Add => {
-                        Ok(CompileResult::Computation(format!("({lhs}+{rhs})")))
-                    }
-                    ArithmeticOperator::Sub => {
-                        Ok(CompileResult::Computation(format!("({lhs}-{rhs})")))
-                    }
-                    ArithmeticOperator::Div => {
-                        Ok(CompileResult::Computation(format!("({lhs}/{rhs})")))
-                    }
-                    ArithmeticOperator::Mul => {
-                        Ok(CompileResult::Computation(format!("({lhs}*{rhs})")))
-                    }
-                    ArithmeticOperator::Mod => {
-                        Ok(CompileResult::Computation(format!("({lhs}%{rhs})")))
-                    }
-                }
+                self.compile_arithmetic(prelude, cleanup, shadows, lhs, *op, rhs)
             }
             IRExpr::Comparison(lhs, op, rhs) => {
-                let lhs = self.compile_expr(lhs, prelude, cleanup, shadows.clone())?;
-                let rhs = self.compile_expr(rhs, prelude, cleanup, shadows)?;
-                match op {
-                    ComparisonOperator::Eq => {
-                        Ok(CompileResult::Computation(format!("({lhs}=={rhs})")))
-                    }
-                    ComparisonOperator::Ne => {
-                        Ok(CompileResult::Computation(format!("({lhs}!={rhs})")))
-                    }
-                    ComparisonOperator::Le => {
-                        Ok(CompileResult::Computation(format!("({lhs}<={rhs})")))
-                    }
-                    ComparisonOperator::Ge => {
-                        Ok(CompileResult::Computation(format!("({lhs}>={rhs})")))
-                    }
-                    ComparisonOperator::Lt => {
-                        Ok(CompileResult::Computation(format!("({lhs}<{rhs})")))
-                    }
-                    ComparisonOperator::Gt => {
-                        Ok(CompileResult::Computation(format!("({lhs}>{rhs})")))
-                    }
-                }
+                self.compile_comparison(prelude, cleanup, shadows, lhs, *op, rhs)
             }
             IRExpr::Boolean(lhs, op, rhs) => {
                 let lhs = self.compile_expr(lhs, prelude, cleanup, shadows.clone())?;
@@ -214,6 +257,214 @@ impl CCompiler {
             IRExpr::FunctionCall(func, args) => {
                 self.compile_function_call(prelude, cleanup, shadows, func, args)
             }
+            IRExpr::BindIoMonad {
+                var_name: var,
+                var_value: val,
+                body,
+                captures,
+            } => self.compile_bind_io_monad(prelude, cleanup, shadows, *var, val, body, captures),
+            IRExpr::Builtin(b) => {
+                self.builtins.insert(*b);
+                match b {
+                    Builtin::Return => Ok(CompileResult::ConstFunction {
+                        struct_name: self.return_struct,
+                        func_name: self.return_func,
+                    }),
+                    Builtin::ReadLine => Ok(CompileResult::BaseValue("(&readLine)".to_string())),
+                    Builtin::WriteLine => Ok(CompileResult::ConstFunction {
+                        struct_name: self.write_line_struct,
+                        func_name: self.write_line_func,
+                    }),
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn compile_bind_io_monad(
+        &mut self,
+        prelude: &mut String,
+        cleanup: &mut String,
+        mut shadows: HashMap<LValue, CompileResult>,
+        var: LValue,
+        val: &IRValue,
+        body: &IRValue,
+        captures: &[(LValue, IRType)],
+    ) -> Result<CompileResult, String> {
+        let IRType::IOMonad(Some(val_ret_ty)) = val.type_hint() else {
+            return Err(format!(
+                "Let binding using `:=` should have an `IO<T>` as the right-hand side; got `{:?}`",
+                val.type_hint()
+            ));
+        };
+        let IRType::IOMonad(body_ret_ty) = body.type_hint() else {
+            return Err(format!(
+                "Let binding using `:=` should have an `IO<T>` or `IO<void>` as the body; got `{:?}`",
+                val.type_hint()
+            ));
+        };
+        let val_ret_ty_name = self.write_type(val_ret_ty);
+        let body_ty_name = self.write_type(body.type_hint());
+        let body_ret_ty_name = body_ret_ty
+            .as_ref()
+            .map_or_else(|| "void".to_string(), |ty| self.write_type(ty));
+        let binding_monad_ty_name = self.write_type(val.type_hint());
+        let binding_monad = self.compile_expr(val, prelude, cleanup, shadows.clone())?;
+        let var_actual = match binding_monad {
+            CompileResult::Computation(cmp) => {
+                writeln!(prelude, "{binding_monad_ty_name} {var} = {cmp};").unwrap();
+                CompileResult::BaseValue(format!("{var}"))
+            }
+            var @ (CompileResult::BaseValue(_) | CompileResult::ConstFunction { .. }) => var,
+        };
+        shadows.insert(var, var_actual);
+        let body_env: Vec<(LValue, IRType)> = captures
+            .iter()
+            .filter(|(lv, _)| !self.constants.contains_key(lv))
+            .cloned()
+            .collect();
+        let full_captures: Vec<_> = body_env
+            .iter()
+            .cloned()
+            .map(|(lv, ty)| {
+                if lv == var {
+                    (lv, val.type_hint().clone())
+                } else {
+                    (lv, ty)
+                }
+            })
+            .collect();
+        // val is an IO<val_ret_ty>
+        // this function will be used as the IO monad returned from the binding
+        let outer_io_monad_name = LValue::new();
+        let mut body_prelude = String::new();
+        let mut body_cleanup = String::new();
+        let mut body_shadows = HashMap::new();
+
+        let (captures_ty, free_captures) = self.compile_lambda_captures_structure(
+            &full_captures,
+            outer_io_monad_name,
+            &body_ty_name,
+        );
+        for (cap, _) in &full_captures {
+            body_shadows.insert(
+                *cap,
+                CompileResult::BaseValue(format!("((({captures_ty} *)captures)->{cap})")),
+            );
+        }
+        body_shadows.insert(var, CompileResult::BaseValue(format!("{var}")));
+
+        writeln!(
+            body_prelude,
+            "{val_ret_ty_name} {var} = (({captures_ty} *)captures)->{var}->f((({captures_ty} *)captures)->{var});"
+        )
+        .unwrap();
+
+        // outer_io_monad_ret is the IO<T> returned by the body of the let binding
+        let body_ret =
+            self.compile_expr(body, &mut body_prelude, &mut body_cleanup, body_shadows)?;
+
+        let fn_def = format!("{body_ret_ty_name} {outer_io_monad_name}({body_ty_name} captures)");
+
+        let inner_monad_result = match body_ret {
+            CompileResult::Computation(cmp) => {
+                let lv = LValue::new();
+                write!(
+                    body_prelude,
+                    "{monad_ty_name} {lv} = {cmp};",
+                    monad_ty_name = self.write_type(body.type_hint())
+                )
+                .unwrap();
+                CompileResult::BaseValue(format!("{lv}"))
+            }
+            result @ (CompileResult::BaseValue(..) | CompileResult::ConstFunction { .. }) => result,
+        };
+        match inner_monad_result {
+            CompileResult::Computation(_) => panic!(),
+            CompileResult::BaseValue(func) => {
+                if let Some(body_ret_ty) = body_ret_ty {
+                    let vrt = self.write_type(body_ret_ty);
+                    writeln!(self.funcdefs, "{fn_def}{{{body_prelude}{vrt} _rv = {func}->f({func});{body_cleanup}return _rv;}}").unwrap();
+                } else {
+                    writeln!(
+                        self.funcdefs,
+                        "{fn_def}{{{body_prelude}{func}->f({func});{body_cleanup}}}"
+                    )
+                    .unwrap();
+                }
+            }
+            CompileResult::ConstFunction {
+                struct_name: _,
+                func_name,
+            } => {
+                if let Some(body_ret_ty) = body_ret_ty {
+                    let vrt = self.write_type(body_ret_ty);
+                    writeln!(self.funcdefs, "{fn_def}{{{body_prelude}{vrt} _rv = {func_name}();{body_cleanup}return _rv;}}").unwrap();
+                } else {
+                    writeln!(
+                        self.funcdefs,
+                        "{fn_def}{{{body_prelude}{func_name}();{body_cleanup}}}"
+                    )
+                    .unwrap();
+                }
+            }
+        }
+        let ret_monad = LValue::new();
+        writeln!(prelude, "{captures_ty} *{ret_monad} = malloc(sizeof (*{ret_monad}));\n{ret_monad}->lambda.f={outer_io_monad_name};\n{ret_monad}->lambda.d={free_captures};\n{ret_monad}->lambda.refcount=1;").unwrap();
+        for (cap, _) in body_env {
+            writeln!(
+                prelude,
+                "{ret_monad}->{cap} = {};",
+                shadows
+                    .get(&cap)
+                    .map_or_else(|| format!("{cap}"), |t| format!("{t}"))
+            )
+            .unwrap();
+        }
+
+        Ok(CompileResult::BaseValue(format!(
+            "(({body_ty_name}){ret_monad})"
+        )))
+    }
+
+    fn compile_comparison(
+        &mut self,
+        prelude: &mut String,
+        cleanup: &mut String,
+        shadows: HashMap<LValue, CompileResult>,
+        lhs: &IRValue,
+        op: ComparisonOperator,
+        rhs: &IRValue,
+    ) -> Result<CompileResult, String> {
+        let lhs = self.compile_expr(lhs, prelude, cleanup, shadows.clone())?;
+        let rhs = self.compile_expr(rhs, prelude, cleanup, shadows)?;
+        match op {
+            ComparisonOperator::Eq => Ok(CompileResult::Computation(format!("({lhs}=={rhs})"))),
+            ComparisonOperator::Ne => Ok(CompileResult::Computation(format!("({lhs}!={rhs})"))),
+            ComparisonOperator::Le => Ok(CompileResult::Computation(format!("({lhs}<={rhs})"))),
+            ComparisonOperator::Ge => Ok(CompileResult::Computation(format!("({lhs}>={rhs})"))),
+            ComparisonOperator::Lt => Ok(CompileResult::Computation(format!("({lhs}<{rhs})"))),
+            ComparisonOperator::Gt => Ok(CompileResult::Computation(format!("({lhs}>{rhs})"))),
+        }
+    }
+
+    fn compile_arithmetic(
+        &mut self,
+        prelude: &mut String,
+        cleanup: &mut String,
+        shadows: HashMap<LValue, CompileResult>,
+        lhs: &IRValue,
+        op: ArithmeticOperator,
+        rhs: &IRValue,
+    ) -> Result<CompileResult, String> {
+        let lhs = self.compile_expr(lhs, prelude, cleanup, shadows.clone())?;
+        let rhs = self.compile_expr(rhs, prelude, cleanup, shadows)?;
+        match op {
+            ArithmeticOperator::Add => Ok(CompileResult::Computation(format!("({lhs}+{rhs})"))),
+            ArithmeticOperator::Sub => Ok(CompileResult::Computation(format!("({lhs}-{rhs})"))),
+            ArithmeticOperator::Div => Ok(CompileResult::Computation(format!("({lhs}/{rhs})"))),
+            ArithmeticOperator::Mul => Ok(CompileResult::Computation(format!("({lhs}*{rhs})"))),
+            ArithmeticOperator::Mod => Ok(CompileResult::Computation(format!("({lhs}%{rhs})"))),
         }
     }
 
@@ -238,7 +489,7 @@ impl CCompiler {
         let else_body =
             self.compile_expr(else_body, &mut else_prelude, &mut else_cleanup, shadows)?;
         let lvalue = LValue::new();
-        write!(prelude, "{} {lvalue};if({cond}){{{body_prelude}{lvalue}={body};{body_cleanup}}}else{{{else_prelude}{lvalue}={else_body};{else_cleanup}}}", self.write_type(&expr.1)).unwrap();
+        write!(prelude, "{} {lvalue};if({cond}){{{body_prelude}{lvalue}={body};{body_cleanup}}}else{{{else_prelude}{lvalue}={else_body};{else_cleanup}}}", self.write_type(expr.type_hint())).unwrap();
 
         Ok(CompileResult::BaseValue(format!("{lvalue}")))
     }
@@ -254,7 +505,7 @@ impl CCompiler {
         let IRType::Function {
             inputs: _,
             output: func_out,
-        } = &func.1
+        } = &func.type_hint()
         else {
             return Err(format!("Expected a fucntion type; got `{func:?}`"));
         };
@@ -266,7 +517,7 @@ impl CCompiler {
             CompileResult::BaseValue(l) => l,
             CompileResult::Computation(s) => {
                 let lv = LValue::new();
-                write!(prelude, "{} {lv} = {s};", self.write_type(&func.1)).unwrap();
+                write!(prelude, "{} {lv} = {s};", self.write_type(func.type_hint())).unwrap();
                 format!("{lv}")
             }
             CompileResult::ConstFunction { func_name, .. } => {
@@ -331,34 +582,32 @@ impl CCompiler {
         body: &IRValue,
         captures: &[(LValue, IRType)],
     ) -> Result<CompileResult, String> {
-        let IRType::Function { inputs, output } = &expr.1 else {
-            return Err(format!("Expected function type; got `{:?}`", expr.1));
+        let IRType::Function { inputs, output } = expr.type_hint() else {
+            return Err(format!(
+                "Expected function type; got `{:?}`",
+                expr.type_hint()
+            ));
         };
 
-        let captures: Vec<&(LValue, IRType)> = captures
+        let captures: Vec<(LValue, IRType)> = captures
             .iter()
             .filter(|(c, _)| !self.constants.contains_key(c))
+            .cloned()
             .collect();
 
         let output_ty = self.write_type(output);
         let funcname = LValue::new();
-        let lambda_ty = self.write_type(&expr.1);
+        let lambda_ty = self.write_type(expr.type_hint());
 
         let (captures_ty, free_function) = if captures.is_empty() {
             (None, "free".to_string())
         } else {
-            self.compile_lambda_captures_structure(&captures, funcname, &lambda_ty)
+            let (ty, f) = self.compile_lambda_captures_structure(&captures, funcname, &lambda_ty);
+            (Some(ty), f)
         };
 
         // define the function
-        let mut funcdef = format!(
-            "{output_ty} {funcname}({lambda_ty} {captures_name}",
-            captures_name = if captures_ty.is_some() {
-                "captures_tmp"
-            } else {
-                "captures"
-            }
-        );
+        let mut funcdef = format!("{output_ty} {funcname}({lambda_ty} captures_tmp");
         for (input, param) in inputs.iter().zip(params.iter()) {
             write!(funcdef, ",{} {param}", self.write_type(input)).unwrap();
         }
@@ -381,7 +630,7 @@ impl CCompiler {
             writeln!(func_body, "if ({body}->refcount != -1) {body}->refcount++;").unwrap();
         }
         writeln!(
-            self.typedefs,
+            self.funcdefs,
             "{funcdef}){{{func_body}{func_cleanup}return {body};}}"
         )
         .unwrap();
@@ -445,7 +694,7 @@ impl CCompiler {
         lambda_lv: LValue,
     ) -> CompileResult {
         writeln!(
-            self.typedefs,
+            self.funcdefs,
             "{lambda_ty_trunc} {lambda_lv} = {{.f={funcname}, .refcount=-1}};",
             lambda_ty_trunc = lambda_ty.replace('*', "")
         )
@@ -462,7 +711,7 @@ impl CCompiler {
             write!(const_fn_def, "{} {param}", self.write_type(input)).unwrap();
         }
         writeln!(
-            self.typedefs,
+            self.funcdefs,
             "{const_fn_def}){{{func_body}{func_cleanup}return {body};}}"
         )
         .unwrap();
@@ -479,12 +728,13 @@ impl CCompiler {
         }
     }
 
+    /// Returns the type of the struct used for captures, and the function used to free that struct
     fn compile_lambda_captures_structure(
         &mut self,
-        captures: &Vec<&(LValue, IRType)>,
+        captures: &[(LValue, IRType)],
         funcname: LValue,
         lambda_ty: &str,
-    ) -> (Option<String>, String) {
+    ) -> (String, String) {
         let captures_ty = format!("_captures_{funcname}");
 
         // create the typedef for the captures type
@@ -497,13 +747,10 @@ impl CCompiler {
             write!(captures_typedecl, "{typ} {cap};").unwrap();
         }
         writeln!(self.typedefs, "{captures_typedecl}}} {captures_ty};").unwrap();
-        let free_fn_tasks: Vec<&(LValue, IRType)> = captures
-            .iter()
-            .copied()
-            .filter(|(_, ty)| ty.is_function())
-            .collect();
+        let free_fn_tasks: Vec<&(LValue, IRType)> =
+            captures.iter().filter(|(_, ty)| ty.is_function()).collect();
         if free_fn_tasks.is_empty() {
-            (Some(captures_ty), "free".to_string())
+            (captures_ty, format!("(void (*)({lambda_ty}))free"))
         } else {
             let free_fn_name = format!("_free{captures_ty}");
 
@@ -513,7 +760,7 @@ impl CCompiler {
             }
             writeln!(self.typedefs, "{free_fn_decl}free(captures);}}").unwrap();
 
-            (Some(captures_ty), free_fn_name)
+            (captures_ty, free_fn_name)
         }
     }
 }

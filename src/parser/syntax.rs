@@ -19,6 +19,11 @@ pub enum Expression {
         val: Box<Self>,
         body: Box<Self>,
     },
+    MonadLet {
+        var: Rc<str>,
+        val: Box<Self>,
+        body: Box<Self>,
+    },
     FunctionCall {
         function: Box<Self>,
         args: Vec<Self>,

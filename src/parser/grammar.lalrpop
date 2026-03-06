@@ -68,6 +68,7 @@ Expr: Expression = {
     Expr5,
     <condition:Box<Expr5>> "?" <body:Box<Expr5>> ":" <else_body:Box<Expr>> => Expression::If { <> },
     "let" <var:Ident> "=" <val:Box<Expr>> ";" <body:Box<Expr>> => Expression::Let { <> },
+    "let" <var:Ident> ":=" <val:Box<Expr>> ";" <body:Box<Expr>> => Expression::MonadLet { <> },
     "(" <args:Sep<Param, ",">> ")" "=>" <body:Box<Expr>> => Expression::Function { <> },
 }
 

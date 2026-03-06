@@ -1,0 +1,4 @@
+let main = 
+    let x := readLine;
+    writeLine(x);
+main

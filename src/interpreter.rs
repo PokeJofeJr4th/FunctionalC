@@ -5,7 +5,8 @@ use std::{
 
 use crate::{
     interpreter::representation::{
-        ArithmeticOperator, BooleanOperator, ComparisonOperator, IRExpr, IRType, IRValue, LValue,
+        ArithmeticOperator, BooleanOperator, Builtin, ComparisonOperator, IRExpr, IRType, IRValue,
+        LValue,
     },
     parser::syntax::{BinaryOperator, Expression},
 };
@@ -21,10 +22,7 @@ type Context = HashMap<Rc<str>, (LValue, IRType)>;
 fn to_ir(syn: Expression, mut context: Context) -> Result<IRValue, String> {
     match syn {
         Expression::String(s) => Ok(IRExpr::String(s).typed(IRType::String)),
-        Expression::Ident(i) => match context.get(&i) {
-            Some((lvalue, ty)) => Ok(IRExpr::GetLocal(*lvalue).typed(ty.clone())),
-            None => Err(format!("Unresolved identifier: `{i}`")),
-        },
+        Expression::Ident(i) => interpret_identifier(&context, &i),
         Expression::Int(i) => Ok(IRExpr::Int(i).typed(IRType::Int)),
         Expression::Float(f) => Ok(IRExpr::Float(f).typed(IRType::Float)),
         Expression::BinaryOperation(lhs, op, rhs) => binary_op_to_ir(context, *lhs, op, *rhs),
@@ -32,37 +30,41 @@ fn to_ir(syn: Expression, mut context: Context) -> Result<IRValue, String> {
             condition,
             body,
             else_body,
-        } => {
-            let condition = to_ir(*condition, context.clone())?;
-            let body = to_ir(*body, context.clone())?;
-            let else_body = to_ir(*else_body, context)?;
-            if condition.1 != IRType::Boolean {
-                return Err(format!(
-                    "Expected boolean for ternary condition; got `{:?}`",
-                    condition.1
-                ));
-            }
-            if body.1 != else_body.1 {
-                return Err(format!(
-                    "Options in a ternary must be same type; got `{:?}` and `{:?}`",
-                    body.1, else_body.1
-                ));
-            }
-            let ty = body.1.clone();
-            Ok(IRExpr::If {
-                condition: Box::new(condition),
-                body: Box::new(body),
-                else_body: Box::new(else_body),
-            }
-            .typed(ty))
-        }
+        } => interpret_ternary(context, *condition, *body, *else_body),
         Expression::Let { var, val, body } => {
             let new_lvalue = LValue::new();
             let val_ir = to_ir(*val, context.clone())?;
-            context.insert(var, (new_lvalue, val_ir.1.clone()));
+            context.insert(var, (new_lvalue, val_ir.type_hint().clone()));
             let body_ir = to_ir(*body, context)?;
-            let ty = body_ir.1.clone();
+            let ty = body_ir.type_hint().clone();
             Ok(IRExpr::SetLocal(new_lvalue, Box::new(val_ir), Box::new(body_ir)).typed(ty))
+        }
+        Expression::MonadLet { var, val, body } => {
+            let new_lvalue = LValue::new();
+            let val_ir = to_ir(*val, context.clone())?;
+            let IRType::IOMonad(retty) = val_ir.type_hint() else {
+                return Err(format!(
+                    "Expected `IO<...>`; got `{:?}`",
+                    val_ir.type_hint()
+                ));
+            };
+            let Some(retty) = retty else {
+                return Err("Can't extract value from `IO<void>`".to_string());
+            };
+            context.insert(var, (new_lvalue, (**retty).clone()));
+            let body_ir = to_ir(*body, context)?;
+            let ty = body_ir.type_hint().clone();
+            if !ty.is_io_monad() {
+                return Err(format!("Expected `IO<...>`; got `{ty:?}`"));
+            }
+            let captures = find_captures(&body_ir, &[]);
+            Ok(IRExpr::BindIoMonad {
+                var_name: new_lvalue,
+                var_value: Box::new(val_ir),
+                body: Box::new(body_ir),
+                captures,
+            }
+            .typed(ty))
         }
         Expression::FunctionCall { function, args } => {
             let args = args
@@ -70,8 +72,8 @@ fn to_ir(syn: Expression, mut context: Context) -> Result<IRValue, String> {
                 .map(|arg| to_ir(arg, context.clone()))
                 .collect::<Result<Vec<IRValue>, String>>()?;
             let func = to_ir(*function, context)?;
-            let IRType::Function { inputs, output } = &func.1 else {
-                return Err(format!("Expected a function; got `{:?}`", func.1));
+            let IRType::Function { inputs, output } = func.type_hint() else {
+                return Err(format!("Expected a function; got `{:?}`", func.type_hint()));
             };
             if inputs.len() != args.len() {
                 return Err(format!(
@@ -80,15 +82,16 @@ fn to_ir(syn: Expression, mut context: Context) -> Result<IRValue, String> {
                     args.len()
                 ));
             }
-            for (IRValue(_, arg_type), param_type) in args.iter().zip(inputs.iter()) {
-                if param_type != arg_type {
+            for (arg, param_type) in args.iter().zip(inputs.iter()) {
+                if param_type != arg.type_hint() {
                     return Err(format!(
-                        "Function type parameter mismatch; expected `{param_type:?}` but got `{arg_type:?}`"
+                        "Function type parameter mismatch; expected `{param_type:?}` but got `{:?}`",
+                        arg.type_hint()
                     ));
                 }
             }
             let output = (**output).clone();
-            Ok(IRValue(IRExpr::FunctionCall(Box::new(func), args), output))
+            Ok(IRExpr::FunctionCall(Box::new(func), args).typed(output))
         }
         Expression::Function { args, body } => {
             let mut new_context = context.clone();
@@ -101,21 +104,70 @@ fn to_ir(syn: Expression, mut context: Context) -> Result<IRValue, String> {
                 new_context.insert(v, (new_lv, t));
             }
             let body = to_ir(*body, new_context)?;
-            let out_ty = body.1.clone();
+            let out_ty = body.type_hint().clone();
             let captures = find_captures(&body, &params);
-            Ok(IRValue(
-                IRExpr::Function {
-                    captures,
-                    params,
-                    body: Box::new(body),
-                },
-                IRType::Function {
-                    inputs,
-                    output: Box::new(out_ty),
-                },
-            ))
+            Ok(IRExpr::Function {
+                captures,
+                params,
+                body: Box::new(body),
+            }
+            .typed(IRType::Function {
+                inputs,
+                output: Box::new(out_ty),
+            }))
         }
     }
+}
+
+fn interpret_identifier(
+    context: &HashMap<Rc<str>, (LValue, IRType)>,
+    i: &str,
+) -> Result<IRValue, String> {
+    match (context.get(i), i) {
+        (Some((lvalue, ty)), _) => Ok(IRExpr::GetLocal(*lvalue).typed(ty.clone())),
+        (None, "return") => Ok(IRExpr::Builtin(Builtin::Return).typed(IRType::Function {
+            inputs: vec![IRType::Int],
+            output: Box::new(IRType::IOMonad(Some(Box::new(IRType::Int)))),
+        })),
+        (None, "readLine") => Ok(IRExpr::Builtin(Builtin::ReadLine)
+            .typed(IRType::IOMonad(Some(Box::new(IRType::String))))),
+        (None, "writeLine") => Ok(IRExpr::Builtin(Builtin::WriteLine).typed(IRType::Function {
+            inputs: vec![IRType::String],
+            output: Box::new(IRType::IOMonad(None)),
+        })),
+        (None, _) => Err(format!("Unresolved identifier: `{i}`")),
+    }
+}
+
+fn interpret_ternary(
+    context: HashMap<Rc<str>, (LValue, IRType)>,
+    condition: Expression,
+    body: Expression,
+    else_body: Expression,
+) -> Result<IRValue, String> {
+    let condition = to_ir(condition, context.clone())?;
+    let body = to_ir(body, context.clone())?;
+    let else_body = to_ir(else_body, context)?;
+    if condition.type_hint() != &IRType::Boolean {
+        return Err(format!(
+            "Expected boolean for ternary condition; got `{:?}`",
+            condition.type_hint()
+        ));
+    }
+    if body.type_hint() != else_body.type_hint() {
+        return Err(format!(
+            "Options in a ternary must be same type; got `{:?}` and `{:?}`",
+            body.type_hint(),
+            else_body.type_hint()
+        ));
+    }
+    let ty = body.type_hint().clone();
+    Ok(IRExpr::If {
+        condition: Box::new(condition),
+        body: Box::new(body),
+        else_body: Box::new(else_body),
+    }
+    .typed(ty))
 }
 
 fn binary_op_to_ir(
@@ -126,7 +178,7 @@ fn binary_op_to_ir(
 ) -> Result<IRValue, String> {
     let lhs = to_ir(lhs, context.clone())?;
     let rhs = to_ir(rhs, context)?;
-    match (op, &lhs.1, &rhs.1) {
+    match (op, lhs.type_hint(), rhs.type_hint()) {
         (
             op @ (BinaryOperator::Add
             | BinaryOperator::Sub
@@ -146,21 +198,19 @@ fn binary_op_to_ir(
             IRType::Float,
         ) => {
             let ty = ty.clone();
-            Ok(IRValue(
-                IRExpr::Arithmetic(
-                    Box::new(lhs),
-                    match op {
-                        BinaryOperator::Add => ArithmeticOperator::Add,
-                        BinaryOperator::Sub => ArithmeticOperator::Sub,
-                        BinaryOperator::Mul => ArithmeticOperator::Mul,
-                        BinaryOperator::Div => ArithmeticOperator::Div,
-                        BinaryOperator::Mod => ArithmeticOperator::Mod,
-                        _ => unreachable!(),
-                    },
-                    Box::new(rhs),
-                ),
-                ty,
-            ))
+            Ok(IRExpr::Arithmetic(
+                Box::new(lhs),
+                match op {
+                    BinaryOperator::Add => ArithmeticOperator::Add,
+                    BinaryOperator::Sub => ArithmeticOperator::Sub,
+                    BinaryOperator::Mul => ArithmeticOperator::Mul,
+                    BinaryOperator::Div => ArithmeticOperator::Div,
+                    BinaryOperator::Mod => ArithmeticOperator::Mod,
+                    _ => unreachable!(),
+                },
+                Box::new(rhs),
+            )
+            .typed(ty))
         }
         (
             op @ (BinaryOperator::Eq
@@ -171,35 +221,31 @@ fn binary_op_to_ir(
             | BinaryOperator::Ge),
             lt,
             rt,
-        ) if lt == rt => Ok(IRValue(
-            IRExpr::Comparison(
+        ) if lt == rt => Ok(IRExpr::Comparison(
+            Box::new(lhs),
+            match op {
+                BinaryOperator::Eq => ComparisonOperator::Eq,
+                BinaryOperator::Ne => ComparisonOperator::Ne,
+                BinaryOperator::Lt => ComparisonOperator::Lt,
+                BinaryOperator::Le => ComparisonOperator::Le,
+                BinaryOperator::Gt => ComparisonOperator::Gt,
+                BinaryOperator::Ge => ComparisonOperator::Ge,
+                _ => unreachable!(),
+            },
+            Box::new(rhs),
+        )
+        .typed(IRType::Boolean)),
+        (op @ (BinaryOperator::And | BinaryOperator::Or), IRType::Boolean, IRType::Boolean) => {
+            Ok(IRExpr::Boolean(
                 Box::new(lhs),
                 match op {
-                    BinaryOperator::Eq => ComparisonOperator::Eq,
-                    BinaryOperator::Ne => ComparisonOperator::Ne,
-                    BinaryOperator::Lt => ComparisonOperator::Lt,
-                    BinaryOperator::Le => ComparisonOperator::Le,
-                    BinaryOperator::Gt => ComparisonOperator::Gt,
-                    BinaryOperator::Ge => ComparisonOperator::Ge,
+                    BinaryOperator::And => BooleanOperator::And,
+                    BinaryOperator::Or => BooleanOperator::Or,
                     _ => unreachable!(),
                 },
                 Box::new(rhs),
-            ),
-            IRType::Boolean,
-        )),
-        (op @ (BinaryOperator::And | BinaryOperator::Or), IRType::Boolean, IRType::Boolean) => {
-            Ok(IRValue(
-                IRExpr::Boolean(
-                    Box::new(lhs),
-                    match op {
-                        BinaryOperator::And => BooleanOperator::And,
-                        BinaryOperator::Or => BooleanOperator::Or,
-                        _ => unreachable!(),
-                    },
-                    Box::new(rhs),
-                ),
-                IRType::Boolean,
-            ))
+            )
+            .typed(IRType::Boolean))
         }
         (t, l, r) => Err(format!(
             "Invalid types for operation `{t:?}`: `{l:?}` and `{r:?}`"
@@ -213,9 +259,9 @@ fn find_captures(body: &IRValue, params: &[LValue]) -> Vec<(LValue, IRType)> {
         values: &mut HashMap<LValue, IRType>,
         blacklist: &mut HashSet<LValue>,
     ) {
-        match &val.0 {
+        match val.expr() {
             IRExpr::GetLocal(lvalue) => {
-                values.insert(*lvalue, val.1.clone());
+                values.insert(*lvalue, val.type_hint().clone());
             }
             IRExpr::SetLocal(lvalue, irvalue, irvalue1) => {
                 blacklist.insert(*lvalue);
@@ -247,12 +293,24 @@ fn find_captures(body: &IRValue, params: &[LValue]) -> Vec<(LValue, IRType)> {
                 values.extend(captures.iter().cloned());
                 visit_captures(body, values, blacklist);
             }
+            IRExpr::BindIoMonad {
+                var_name,
+                var_value,
+                body,
+                captures,
+            } => {
+                blacklist.insert(*var_name);
+                values.extend(captures.iter().cloned());
+                visit_captures(var_value, values, blacklist);
+                visit_captures(body, values, blacklist);
+            }
             IRExpr::FunctionCall(irvalue, irvalues) => {
                 visit_captures(irvalue, values, blacklist);
                 for i in irvalues {
                     visit_captures(i, values, blacklist);
                 }
             }
+            IRExpr::Builtin(_) => (),
         }
     }
     let mut values = HashMap::new();

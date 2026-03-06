@@ -30,7 +30,49 @@ impl Debug for LValue {
 }
 
 #[derive(Debug)]
-pub struct IRValue(pub IRExpr, pub IRType);
+pub struct IRValue(IRExpr, IRType);
+
+impl IRValue {
+    pub const fn type_hint(&self) -> &IRType {
+        &self.1
+    }
+
+    pub const fn expr(&self) -> &IRExpr {
+        &self.0
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Builtin {
+    /// generic<T> (value: T) -> IO<T>
+    ///
+    /// Just returns that value from the monad
+    Return,
+    /// IO<str>
+    ///
+    /// Reads one line from the terminal
+    ReadLine,
+    /// (text: str) -> IO<()>
+    ///
+    /// Prints one line of text to the terminal
+    WriteLine,
+}
+
+impl Display for Builtin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Return => write!(f, "return"),
+            Self::ReadLine => write!(f, "readLine"),
+            Self::WriteLine => write!(f, "writeLine"),
+        }
+    }
+}
+
+impl Debug for Builtin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self}")
+    }
+}
 
 /// # Intermediate representation of a value
 ///
@@ -41,6 +83,12 @@ pub struct IRValue(pub IRExpr, pub IRType);
 pub enum IRExpr {
     GetLocal(LValue),
     SetLocal(LValue, Box<IRValue>, Box<IRValue>),
+    BindIoMonad {
+        var_name: LValue,
+        var_value: Box<IRValue>,
+        body: Box<IRValue>,
+        captures: Vec<(LValue, IRType)>,
+    },
     Int(i64),
     Float(f64),
     String(Rc<str>),
@@ -58,6 +106,7 @@ pub enum IRExpr {
         body: Box<IRValue>,
     },
     FunctionCall(Box<IRValue>, Vec<IRValue>),
+    Builtin(Builtin),
 }
 
 impl IRExpr {
@@ -97,6 +146,7 @@ pub enum IRType {
     Float,
     String,
     Boolean,
+    IOMonad(Option<Box<Self>>),
     Function {
         inputs: Vec<Self>,
         output: Box<Self>,
@@ -106,5 +156,9 @@ pub enum IRType {
 impl IRType {
     pub const fn is_function(&self) -> bool {
         matches!(self, Self::Function { .. })
+    }
+
+    pub const fn is_io_monad(&self) -> bool {
+        matches!(self, Self::IOMonad(..))
     }
 }
