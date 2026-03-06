@@ -1,6 +1,3 @@
-let main = (
-    writeLine("Hello!");
-    let x := readLine;
-    writeLine(x)
-);
-main
+writeLine("Hello!");
+let x := readLine;
+writeLine(x)

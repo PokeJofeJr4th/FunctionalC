@@ -34,7 +34,7 @@ fn main() -> ExitCode {
         }
     };
 
-    println!("{syn:#?}");
+    // println!("{syn:#?}");
 
     let ir = match interpreter::interpret(syn) {
         Ok(ir) => ir,
@@ -44,7 +44,7 @@ fn main() -> ExitCode {
         }
     };
 
-    println!("{ir:#?}");
+    // println!("{ir:#?}");
 
     let compiled = match CCompiler::new().compile(&ir) {
         Ok(c) => c,
