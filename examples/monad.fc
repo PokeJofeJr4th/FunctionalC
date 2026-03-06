@@ -1,4 +1,6 @@
-let main = 
+let main = (
+    writeLine("Hello!");
     let x := readLine;
-    writeLine(x);
+    writeLine(x)
+);
 main

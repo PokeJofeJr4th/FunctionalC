@@ -26,7 +26,7 @@ fn to_ir(syn: Expression, mut context: Context) -> Result<IRValue, String> {
         Expression::Int(i) => Ok(IRExpr::Int(i).typed(IRType::Int)),
         Expression::Float(f) => Ok(IRExpr::Float(f).typed(IRType::Float)),
         Expression::BinaryOperation(lhs, op, rhs) => binary_op_to_ir(context, *lhs, op, *rhs),
-        Expression::If {
+        Expression::Ternary {
             condition,
             body,
             else_body,
@@ -39,33 +39,7 @@ fn to_ir(syn: Expression, mut context: Context) -> Result<IRValue, String> {
             let ty = body_ir.type_hint().clone();
             Ok(IRExpr::SetLocal(new_lvalue, Box::new(val_ir), Box::new(body_ir)).typed(ty))
         }
-        Expression::MonadLet { var, val, body } => {
-            let new_lvalue = LValue::new();
-            let val_ir = to_ir(*val, context.clone())?;
-            let IRType::IOMonad(retty) = val_ir.type_hint() else {
-                return Err(format!(
-                    "Expected `IO<...>`; got `{:?}`",
-                    val_ir.type_hint()
-                ));
-            };
-            let Some(retty) = retty else {
-                return Err("Can't extract value from `IO<void>`".to_string());
-            };
-            context.insert(var, (new_lvalue, (**retty).clone()));
-            let body_ir = to_ir(*body, context)?;
-            let ty = body_ir.type_hint().clone();
-            if !ty.is_io_monad() {
-                return Err(format!("Expected `IO<...>`; got `{ty:?}`"));
-            }
-            let captures = find_captures(&body_ir, &[]);
-            Ok(IRExpr::BindIoMonad {
-                var_name: new_lvalue,
-                var_value: Box::new(val_ir),
-                body: Box::new(body_ir),
-                captures,
-            }
-            .typed(ty))
-        }
+        Expression::MonadLet { var, val, body } => interpret_monad_let(context, var, *val, *body),
         Expression::FunctionCall { function, args } => {
             let args = args
                 .into_iter()
@@ -116,7 +90,55 @@ fn to_ir(syn: Expression, mut context: Context) -> Result<IRValue, String> {
                 output: Box::new(out_ty),
             }))
         }
+        Expression::ComposeMonads(first, second) => {
+            let first = to_ir(*first, context.clone())?;
+            let second = to_ir(*second, context)?;
+            let (IRType::IOMonad(None), IRType::IOMonad(None)) =
+                (first.type_hint(), second.type_hint())
+            else {
+                return Err(format!(
+                    "Monad composition expects two `IO<void>`; got `{:?}` and `{:?}`",
+                    first.type_hint(),
+                    second.type_hint()
+                ));
+            };
+            Ok(IRExpr::ComposeMonads(Box::new(first), Box::new(second))
+                .typed(IRType::IOMonad(None)))
+        }
     }
+}
+
+fn interpret_monad_let(
+    mut context: HashMap<Rc<str>, (LValue, IRType)>,
+    var: Rc<str>,
+    val: Expression,
+    body: Expression,
+) -> Result<IRValue, String> {
+    let new_lvalue = LValue::new();
+    let val_ir = to_ir(val, context.clone())?;
+    let IRType::IOMonad(retty) = val_ir.type_hint() else {
+        return Err(format!(
+            "Expected `IO<...>`; got `{:?}`",
+            val_ir.type_hint()
+        ));
+    };
+    let Some(retty) = retty else {
+        return Err("Can't extract value from `IO<void>`".to_string());
+    };
+    context.insert(var, (new_lvalue, (**retty).clone()));
+    let body_ir = to_ir(body, context)?;
+    let ty = body_ir.type_hint().clone();
+    if !ty.is_io_monad() {
+        return Err(format!("Expected `IO<...>`; got `{ty:?}`"));
+    }
+    let captures = find_captures(&body_ir, &[]);
+    Ok(IRExpr::BindIoMonad {
+        var_name: new_lvalue,
+        var_value: Box::new(val_ir),
+        body: Box::new(body_ir),
+        captures,
+    }
+    .typed(ty))
 }
 
 fn interpret_identifier(
@@ -268,7 +290,7 @@ fn find_captures(body: &IRValue, params: &[LValue]) -> Vec<(LValue, IRType)> {
                 visit_captures(irvalue, values, blacklist);
                 visit_captures(irvalue1, values, blacklist);
             }
-            IRExpr::Int(_) | IRExpr::Float(_) | IRExpr::String(_) => todo!(),
+            IRExpr::Int(_) | IRExpr::Float(_) | IRExpr::String(_) | IRExpr::Builtin(_) => (),
             IRExpr::If {
                 condition,
                 body,
@@ -310,7 +332,10 @@ fn find_captures(body: &IRValue, params: &[LValue]) -> Vec<(LValue, IRType)> {
                     visit_captures(i, values, blacklist);
                 }
             }
-            IRExpr::Builtin(_) => (),
+            IRExpr::ComposeMonads(first, second) => {
+                visit_captures(first, values, blacklist);
+                visit_captures(second, values, blacklist);
+            }
         }
     }
     let mut values = HashMap::new();

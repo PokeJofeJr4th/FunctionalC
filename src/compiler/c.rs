@@ -56,14 +56,14 @@ impl Compiler for CCompiler {
 
     fn compile(mut self, expr: &IRValue) -> Result<Self::Output, Self::Error> {
         let (print_spec, is_monad) = match &expr.type_hint() {
-            IRType::Float => ("\"%f\"", false),
-            IRType::String => ("\"\\\"%s\\\"\"", false),
+            IRType::Float => ("\"%f\\n\"", false),
+            IRType::String => ("\"%s\\n\"", false),
             IRType::Int | IRType::Boolean => ("\"%i\"", false),
             IRType::IOMonad(Some(ty)) => (
                 match **ty {
-                    IRType::Float => "\"%f\"",
-                    IRType::String => "\"%s\"",
-                    IRType::Int | IRType::Boolean => "\"%i\"",
+                    IRType::Float => "\"%f\\n\"",
+                    IRType::String => "\"%s\\n\"",
+                    IRType::Int | IRType::Boolean => "\"%i\\n\"",
                     _ => return Err(format!("Expected a primitive type; got `{ty:?}`")),
                 },
                 true,
@@ -71,7 +71,7 @@ impl Compiler for CCompiler {
             IRType::IOMonad(None) => ("", true),
             IRType::Function { .. } => {
                 return Err(format!(
-                    "Expected a primitive type; got `{:?}`",
+                    "Expected a primitive type or `IO<T>`; got `{:?}`",
                     expr.type_hint()
                 ));
             }
@@ -99,7 +99,7 @@ impl Compiler for CCompiler {
                 output: Box::new(monad_ty),
             };
             let func_ty_name = self.write_type(&func_ty);
-            writeln!(self.typedefs, "typedef struct _writeLine_captures {{{monad_ty_name_short} lambda;char *str;}} _writeLine_captures;\nvoid writeLine_inner({monad_ty_name} captures){{printf(\"%s\", ((_writeLine_captures *)captures)->str);}}\n{monad_ty_name} {wl}(char *str){{\n_writeLine_captures *wl = malloc(sizeof(*wl));\nwl->lambda.f=writeLine_inner;\nwl->lambda.d=NULL;\nwl->lambda.refcount=1;\nwl->str=str;\nreturn (_io_void*)wl;\n}}\n{monad_ty_name} _writeLine_lambda({func_ty_name} _, char *str){{\n_writeLine_captures *wl = malloc(sizeof(*wl));\nwl->lambda.f=writeLine_inner;\nwl->lambda.d=NULL;\nwl->lambda.refcount=1;\nwl->str=str;\nreturn (_io_void*)wl;\n}}\n{func_ty_name_short} {wls} = {{.f=_writeLine_lambda, .refcount=-1}};", wl=self.write_line_func, wls=self.write_line_struct,monad_ty_name_short = monad_ty_name.replace('*', ""), func_ty_name_short = func_ty_name.replace('*', "")).unwrap();
+            writeln!(self.typedefs, "typedef struct _writeLine_captures {{{monad_ty_name_short} lambda;char *str;}} _writeLine_captures;\nvoid writeLine_inner({monad_ty_name} captures){{printf(\"%s\\n\", ((_writeLine_captures *)captures)->str);}}\n{monad_ty_name} {wl}(char *str){{\n_writeLine_captures *wl = malloc(sizeof(*wl));\nwl->lambda.f=writeLine_inner;\nwl->lambda.d=NULL;\nwl->lambda.refcount=1;\nwl->str=str;\nreturn (_io_void*)wl;\n}}\n{monad_ty_name} _writeLine_lambda({func_ty_name} _, char *str){{\n_writeLine_captures *wl = malloc(sizeof(*wl));\nwl->lambda.f=writeLine_inner;\nwl->lambda.d=NULL;\nwl->lambda.refcount=1;\nwl->str=str;\nreturn (_io_void*)wl;\n}}\n{func_ty_name_short} {wls} = {{.f=_writeLine_lambda, .refcount=-1}};", wl=self.write_line_func, wls=self.write_line_struct,monad_ty_name_short = monad_ty_name.replace('*', ""), func_ty_name_short = func_ty_name.replace('*', "")).unwrap();
         }
         if is_monad {
             if print_spec.is_empty() {
@@ -124,7 +124,7 @@ impl Compiler for CCompiler {
 
 impl CCompiler {
     pub fn new() -> Self {
-        Self {
+        let mut s = Self {
             constants: HashMap::new(),
             typedecls: HashSet::new(),
             typedefs: String::new(),
@@ -134,7 +134,41 @@ impl CCompiler {
             return_func: LValue::new(),
             write_line_struct: LValue::new(),
             write_line_func: LValue::new(),
-        }
+        };
+
+        let io_monad = s.write_type(&IRType::IOMonad(None));
+        let first_lv = LValue::new();
+        let second_lv = LValue::new();
+        let inner_lv = LValue::new();
+        let (caps, free) = s.compile_lambda_captures_structure(
+            &[
+                (first_lv, IRType::IOMonad(None)),
+                (second_lv, IRType::IOMonad(None)),
+            ],
+            inner_lv,
+            &io_monad,
+        );
+
+        writeln!(
+            s.funcdefs,
+            "
+void {inner_lv}({io_monad} c) {{
+    (({caps}*)c)->{first_lv}->f((({caps}*)c)->{first_lv});
+    (({caps}*)c)->{second_lv}->f((({caps}*)c)->{second_lv});
+}}
+{io_monad} _compose_monads({io_monad} {first_lv}, {io_monad} {second_lv}) {{
+    {caps} *monad = ({caps}*)malloc(sizeof(*monad));
+    monad->lambda.f = {inner_lv};
+    monad->lambda.d = {free};
+    monad->lambda.refcount = 1;
+    monad->{first_lv}={first_lv};
+    monad->{second_lv}={second_lv};
+    return ({io_monad})monad;
+}}"
+        )
+        .unwrap();
+
+        s
     }
 
     fn short_type(&mut self, ty: &IRType) -> String {
@@ -277,10 +311,17 @@ impl CCompiler {
                     }),
                 }
             }
+            IRExpr::ComposeMonads(first, second) => {
+                let first_res = self.compile_expr(first, prelude, cleanup, shadows.clone())?;
+                let second_res = self.compile_expr(second, prelude, cleanup, shadows)?;
+                Ok(CompileResult::Computation(format!(
+                    "_compose_monads({first_res},{second_res})"
+                )))
+            }
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn compile_bind_io_monad(
         &mut self,
         prelude: &mut String,
@@ -311,8 +352,8 @@ impl CCompiler {
         let binding_monad_ty_name = self.write_type(val.type_hint());
         let binding_monad = self.compile_expr(val, prelude, cleanup, shadows.clone())?;
         let var_actual = match binding_monad {
-            CompileResult::Computation(cmp) => {
-                writeln!(prelude, "{binding_monad_ty_name} {var} = {cmp};").unwrap();
+            CompileResult::Computation(var_actual) => {
+                writeln!(prelude, "{binding_monad_ty_name} {var} = {var_actual};").unwrap();
                 CompileResult::BaseValue(format!("{var}"))
             }
             var @ (CompileResult::BaseValue(_) | CompileResult::ConstFunction { .. }) => var,

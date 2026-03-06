@@ -75,37 +75,48 @@ impl Debug for Builtin {
 }
 
 /// # Intermediate representation of a value
-///
-/// `GetLocal` = access the value of a local variable or function parameter
-/// `SetLocal` = `let` block
-/// Simple literal values
 #[derive(Debug)]
 pub enum IRExpr {
+    /// Read the value of a local variable
     GetLocal(LValue),
+    /// Set the value of a local variable, then evaluate another expression in the new context
     SetLocal(LValue, Box<IRValue>, Box<IRValue>),
+    /// Create an IO Monad by unwrapping the return value of another monad.
     BindIoMonad {
         var_name: LValue,
         var_value: Box<IRValue>,
         body: Box<IRValue>,
         captures: Vec<(LValue, IRType)>,
     },
+    /// Create an IO Monad by concatenating two other monads.
+    ComposeMonads(Box<IRValue>, Box<IRValue>),
+    /// Load an integer literal
     Int(i64),
+    /// Load a float literal
     Float(f64),
+    /// Load a string literal
     String(Rc<str>),
+    /// If the condition is true, evaluate the first value; otherwise, evaluate the second.
     If {
         condition: Box<IRValue>,
         body: Box<IRValue>,
         else_body: Box<IRValue>,
     },
+    /// Apply an arithmetic operation to two values
     Arithmetic(Box<IRValue>, ArithmeticOperator, Box<IRValue>),
+    /// Compare two values
     Comparison(Box<IRValue>, ComparisonOperator, Box<IRValue>),
+    /// Compare two boolean values
     Boolean(Box<IRValue>, BooleanOperator, Box<IRValue>),
+    /// Create a function with the given parameters and environment captures
     Function {
         params: Vec<LValue>,
         captures: Vec<(LValue, IRType)>,
         body: Box<IRValue>,
     },
+    /// Call a function
     FunctionCall(Box<IRValue>, Vec<IRValue>),
+    /// Load a builtin function or lambda object
     Builtin(Builtin),
 }
 

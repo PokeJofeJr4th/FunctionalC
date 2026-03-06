@@ -64,12 +64,17 @@ T5: BinaryOperator = {
     "||" => BinaryOperator::Or,
 }
 
-Expr: Expression = {
+NonSemiExpr: Expression = {
     Expr5,
-    <condition:Box<Expr5>> "?" <body:Box<Expr5>> ":" <else_body:Box<Expr>> => Expression::If { <> },
-    "let" <var:Ident> "=" <val:Box<Expr>> ";" <body:Box<Expr>> => Expression::Let { <> },
-    "let" <var:Ident> ":=" <val:Box<Expr>> ";" <body:Box<Expr>> => Expression::MonadLet { <> },
-    "(" <args:Sep<Param, ",">> ")" "=>" <body:Box<Expr>> => Expression::Function { <> },
+    <condition:Box<Expr5>> "?" <body:Box<Expr5>> ":" <else_body:Box<NonSemiExpr>> => Expression::Ternary { <> },
+    "(" <args:Sep<Param, ",">> ")" "=>" <body:Box<NonSemiExpr>> => Expression::Function { <> },
+}
+
+Expr: Expression = {
+    NonSemiExpr,
+    "let" <var:Ident> "=" <val:Box<NonSemiExpr>> ";" <body:Box<Expr>> => Expression::Let { <> },
+    "let" <var:Ident> ":=" <val:Box<NonSemiExpr>> ";" <body:Box<Expr>> => Expression::MonadLet { <> },
+    <Box<NonSemiExpr>> ";" <Box<Expr>> => Expression::ComposeMonads(<>),
 }
 
 Param: (Rc<str>, IRType) = <Ident> ":" <IRType>;
