@@ -23,5 +23,5 @@ struct specific_lambda {
 - Generics
 - Recursion
 - Structs
-- Type aliases
 - Reference counting for IO Monads
+- Reference counting for strings

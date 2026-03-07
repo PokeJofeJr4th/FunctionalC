@@ -1,7 +1,5 @@
 use std::rc::Rc;
 
-use crate::interpreter::representation::IRType;
-
 #[derive(Debug)]
 pub enum Expression {
     /// String literal
@@ -34,6 +32,12 @@ pub enum Expression {
         val: Box<Self>,
         body: Box<Self>,
     },
+    /// A block that defines a type alias
+    TypeAlias {
+        alias: Rc<str>,
+        typ: TypeExpr,
+        body: Box<Self>
+    },
     /// Two `IO<()>` monads composed together: `<first>; <second>`
     ComposeMonads(Box<Self>, Box<Self>),
     /// Invoking a function: `<function>(<args>, ..)`
@@ -43,7 +47,7 @@ pub enum Expression {
     },
     /// Creating a function: `(<args>, ...) => <body>`
     Function {
-        args: Vec<(Rc<str>, IRType)>,
+        args: Vec<(Rc<str>, TypeExpr)>,
         body: Box<Self>,
     },
 }
@@ -65,4 +69,18 @@ pub enum BinaryOperator {
     Index,
     And,
     Or,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Hash)]
+pub enum TypeExpr {
+    Int,
+    Float,
+    String,
+    Boolean,
+    IOMonad(Option<Box<Self>>),
+    Function {
+        inputs: Vec<Self>,
+        output: Box<Self>,
+    },
+    Named(Rc<str>),
 }

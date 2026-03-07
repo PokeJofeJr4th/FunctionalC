@@ -8,16 +8,20 @@ use crate::{
         ArithmeticOperator, BooleanOperator, Builtin, ComparisonOperator, IRExpr, IRType, IRValue,
         LValue,
     },
-    parser::syntax::{BinaryOperator, Expression},
+    parser::syntax::{BinaryOperator, Expression, TypeExpr},
 };
 
 pub mod representation;
 
 pub fn interpret(syn: Expression) -> Result<IRValue, String> {
-    to_ir(syn, HashMap::new())
+    to_ir(syn, Context::default())
 }
 
-type Context = HashMap<Rc<str>, (LValue, IRType)>;
+#[derive(Clone, Default)]
+struct Context {
+    vars: HashMap<Rc<str>, (LValue, IRType)>,
+    types: HashMap<Rc<str>, IRType>,
+}
 
 fn to_ir(syn: Expression, mut context: Context) -> Result<IRValue, String> {
     match syn {
@@ -34,7 +38,9 @@ fn to_ir(syn: Expression, mut context: Context) -> Result<IRValue, String> {
         Expression::Let { var, val, body } => {
             let new_lvalue = LValue::new();
             let val_ir = to_ir(*val, context.clone())?;
-            context.insert(var, (new_lvalue, val_ir.type_hint().clone()));
+            context
+                .vars
+                .insert(var, (new_lvalue, val_ir.type_hint().clone()));
             let body_ir = to_ir(*body, context)?;
             let ty = body_ir.type_hint().clone();
             Ok(IRExpr::SetLocal(new_lvalue, Box::new(val_ir), Box::new(body_ir)).typed(ty))
@@ -74,8 +80,9 @@ fn to_ir(syn: Expression, mut context: Context) -> Result<IRValue, String> {
             for (v, t) in args {
                 let new_lv = LValue::new();
                 params.push(new_lv);
+                let t = eval_type(&context, t)?;
                 inputs.push(t.clone());
-                new_context.insert(v, (new_lv, t));
+                new_context.vars.insert(v, (new_lv, t));
             }
             let body = to_ir(*body, new_context)?;
             let out_ty = body.type_hint().clone();
@@ -105,11 +112,41 @@ fn to_ir(syn: Expression, mut context: Context) -> Result<IRValue, String> {
             Ok(IRExpr::ComposeMonads(Box::new(first), Box::new(second))
                 .typed(IRType::IOMonad(None)))
         }
+        Expression::TypeAlias { alias, typ, body } => {
+            let typ = eval_type(&context, typ)?;
+            context.types.insert(alias, typ);
+            to_ir(*body, context)
+        }
+    }
+}
+
+fn eval_type(context: &Context, typ: TypeExpr) -> Result<IRType, String> {
+    match typ {
+        TypeExpr::Int => Ok(IRType::Int),
+        TypeExpr::Float => Ok(IRType::Float),
+        TypeExpr::String => Ok(IRType::String),
+        TypeExpr::Boolean => Ok(IRType::Boolean),
+        TypeExpr::IOMonad(None) => Ok(IRType::IOMonad(None)),
+        TypeExpr::IOMonad(Some(inner)) => {
+            Ok(IRType::IOMonad(Some(Box::new(eval_type(context, *inner)?))))
+        }
+        TypeExpr::Function { inputs, output } => {
+            let output = Box::new(eval_type(context, *output)?);
+            let inputs = inputs
+                .into_iter()
+                .map(|typ| eval_type(context, typ))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(IRType::Function { inputs, output })
+        }
+        TypeExpr::Named(ref name) => context.types.get(name).map_or_else(
+            || Err(format!("Unknown type `{typ:?}`")),
+            |ty| Ok(ty.clone()),
+        ),
     }
 }
 
 fn interpret_monad_let(
-    mut context: HashMap<Rc<str>, (LValue, IRType)>,
+    mut context: Context,
     var: Rc<str>,
     val: Expression,
     body: Expression,
@@ -125,7 +162,7 @@ fn interpret_monad_let(
     let Some(retty) = retty else {
         return Err("Can't extract value from `IO<void>`".to_string());
     };
-    context.insert(var, (new_lvalue, (**retty).clone()));
+    context.vars.insert(var, (new_lvalue, (**retty).clone()));
     let body_ir = to_ir(body, context)?;
     let ty = body_ir.type_hint().clone();
     if !ty.is_io_monad() {
@@ -141,11 +178,8 @@ fn interpret_monad_let(
     .typed(ty))
 }
 
-fn interpret_identifier(
-    context: &HashMap<Rc<str>, (LValue, IRType)>,
-    i: &str,
-) -> Result<IRValue, String> {
-    match (context.get(i), i) {
+fn interpret_identifier(context: &Context, i: &str) -> Result<IRValue, String> {
+    match (context.vars.get(i), i) {
         (Some((lvalue, ty)), _) => Ok(IRExpr::GetLocal(*lvalue).typed(ty.clone())),
         (None, "return") => Ok(IRExpr::Builtin(Builtin::Return).typed(IRType::Function {
             inputs: vec![IRType::Int],
@@ -162,7 +196,7 @@ fn interpret_identifier(
 }
 
 fn interpret_ternary(
-    context: HashMap<Rc<str>, (LValue, IRType)>,
+    context: Context,
     condition: Expression,
     body: Expression,
     else_body: Expression,
@@ -193,7 +227,7 @@ fn interpret_ternary(
 }
 
 fn binary_op_to_ir(
-    context: HashMap<Rc<str>, (LValue, IRType)>,
+    context: Context,
     lhs: Expression,
     op: BinaryOperator,
     rhs: Expression,

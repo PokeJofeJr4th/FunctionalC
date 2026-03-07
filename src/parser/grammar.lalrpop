@@ -1,5 +1,4 @@
-use super::syntax::{Expression, BinaryOperator};
-use crate::interpreter::representation::IRType;
+use super::syntax::{Expression, BinaryOperator, TypeExpr};
 use std::rc::Rc;
 
 grammar;
@@ -76,18 +75,20 @@ Expr: Expression = {
     NonSemiExpr,
     "let" <var:Ident> "=" <val:Box<NonSemiExpr>> ";" <body:Box<Expr>> => Expression::Let { <> },
     "let" <var:Ident> ":=" <val:Box<NonSemiExpr>> ";" <body:Box<Expr>> => Expression::MonadLet { <> },
+    "type" <alias:Ident> "=" <typ:TypeExpr> ";" <body:Box<Expr>> => Expression::TypeAlias { <> },
     <Box<NonSemiExpr>> ";" <Box<Expr>> => Expression::ComposeMonads(<>),
 }
 
-Param: (Rc<str>, IRType) = <Ident> ":" <IRType>;
+Param: (Rc<str>, TypeExpr) = <Ident> ":" <TypeExpr>;
 
-IRType: IRType = {
-    "int" => IRType::Int,
-    "float" => IRType::Float,
-    "string" => IRType::String,
-    "bool" => IRType::Boolean,
-    "(" <inputs:Sep<IRType,",">> ")" "->" <output:Box<IRType>> => IRType::Function{ <> },
-    "(" <IRType> ")" => <>
+TypeExpr: TypeExpr = {
+    "int" => TypeExpr::Int,
+    "float" => TypeExpr::Float,
+    "string" => TypeExpr::String,
+    "bool" => TypeExpr::Boolean,
+    Ident => TypeExpr::Named(<>),
+    "(" <inputs:Sep<TypeExpr,",">> ")" "->" <output:Box<TypeExpr>> => TypeExpr::Function{ <> },
+    "(" <TypeExpr> ")" => <>
 }
 
 #[inline]
