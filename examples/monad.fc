@@ -1,8 +1,4 @@
-writeLine("Hello!");
+writeLine("Hello! Please enter your name below:");
 let yourName := readLine;
-if 1 == 0 {
-    writeLine("hi chad")
-} else {
-    writeLine("Hi, ");
-    writeLine(yourName)
-}
+writeLine("Greetings,");
+writeLine(yourName)

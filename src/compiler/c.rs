@@ -85,7 +85,7 @@ impl Compiler for CCompiler {
             let monad_ty = self.write_type(&IRType::IOMonad(Some(Box::new(IRType::String))));
             writeln!(
                 self.typedefs,
-                "{getline}char *{lv}({monad_ty} _) {{size_t size; char *line=NULL; getline(&line, &size, stdin);return line;}}{monad_ty_short} readLine = {{.f={lv}, .refcount=-1}};",
+                "{getline}str *{lv}({monad_ty} _) {{str *line=NULL; getline(&line, stdin);return line;}}{monad_ty_short} readLine = {{.f={lv}, .refcount=-1}};",
                 monad_ty_short=monad_ty.replace('*', ""),
                 getline=include_str!("../getline")
             )
@@ -110,22 +110,22 @@ impl Compiler for CCompiler {
                 self.typedefs,
                 "
 void writeLine_inner({monad_ty_name} captures){{
-    printf(\"%s\\n\", (({caps} *)captures)->{str_lv});
+    printf(\"%s\\n\", (({caps} *)captures)->{str_lv}->content);
 }}
-{monad_ty_name} {wl}(char *str){{
+{monad_ty_name} {wl}(str *st){{
     {caps} *wl = malloc(sizeof(*wl));
     wl->lambda.f=writeLine_inner;
     wl->lambda.d={free_fn};
     wl->lambda.refcount=1;
-    wl->{str_lv}=str;
+    wl->{str_lv}=st;
     return (_io_void*)wl;
 }}
-{monad_ty_name} _writeLine_lambda({func_ty_name} _, char *str){{
+{monad_ty_name} _writeLine_lambda({func_ty_name} _, str *st){{
     {caps} *wl = malloc(sizeof(*wl));
     wl->lambda.f=writeLine_inner;
     wl->lambda.d={free_fn};
     wl->lambda.refcount=1;
-    wl->{str_lv}=str;
+    wl->{str_lv}=st;
     return (_io_void*)wl;
 }}
 {func_ty_name_short} {wls} = {{.f=_writeLine_lambda, .refcount=-1}};",
@@ -201,22 +201,23 @@ void {inner_lv}({io_monad} c) {{
 }}"
         )
         .unwrap();
-
+        writeln!(
+            s.typedefs,
+            "typedef struct {{int length;int refcount;char content[];}} str;"
+        )
+        .unwrap();
         s
     }
 
     fn short_type(&mut self, ty: &IRType) -> String {
-        match ty {
-            IRType::String => "str".to_string(),
-            ty => self.write_type(ty).replace('*', ""),
-        }
+        self.write_type(ty).replace('*', "")
     }
 
     fn write_type(&mut self, ty: &IRType) -> String {
         match ty {
             IRType::Int | IRType::Boolean => "int".to_string(),
             IRType::Float => "float".to_string(),
-            IRType::String => "char *".to_string(),
+            IRType::String => "str*".to_string(),
             IRType::Function { inputs, output } => {
                 let mut short_name = format!("_func_{}", self.short_type(output));
                 for i in inputs {
@@ -293,7 +294,16 @@ void {inner_lv}({io_monad} c) {{
             }
             IRExpr::Int(i) => Ok(CompileResult::BaseValue(format!("{i}"))),
             IRExpr::Float(f) => Ok(CompileResult::BaseValue(format!("{f}"))),
-            IRExpr::String(s) => Ok(CompileResult::BaseValue(format!("{s:?}"))),
+            IRExpr::String(s) => {
+                let str_lv = LValue::new();
+                writeln!(
+                    self.funcdefs,
+                    "str {str_lv} = {{.refcount=-1,.length={},.content={s}}};",
+                    s.len() - 2
+                )
+                .unwrap();
+                Ok(CompileResult::BaseValue(format!("(&{str_lv:?})")))
+            }
             IRExpr::If {
                 condition,
                 body,
