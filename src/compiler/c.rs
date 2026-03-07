@@ -138,18 +138,18 @@ void writeLine_inner({monad_ty_name} captures){{
         if is_monad {
             if print_spec.is_empty() {
                 Ok(format!(
-                    "#include <stdio.h>\n#include <stdlib.h>\n{}{}\nint main(){{{prelude}{expr_type} _monad = {expr};_monad->f(_monad);{cleanup}}}",
+                    "#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n{}{}\nint main(){{{prelude}{expr_type} _monad = {expr};_monad->f(_monad);{cleanup}}}",
                     self.typedefs, self.funcdefs
                 ))
             } else {
                 Ok(format!(
-                    "#include <stdio.h>\n#include <stdlib.h>\n{}{}\nint main(){{{prelude}{expr_type} _monad = {expr};printf({print_spec},_monad->f(_monad));{cleanup}}}",
+                    "#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n{}{}\nint main(){{{prelude}{expr_type} _monad = {expr};printf({print_spec},_monad->f(_monad));{cleanup}}}",
                     self.typedefs, self.funcdefs
                 ))
             }
         } else {
             Ok(format!(
-                "#include <stdio.h>\n#include <stdlib.h>\n{}{}\nint main(){{{prelude}printf({print_spec},{expr});{cleanup}}}",
+                "#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n{}{}\nint main(){{{prelude}printf({print_spec},{expr});{cleanup}}}",
                 self.typedefs, self.funcdefs
             ))
         }
@@ -521,8 +521,17 @@ void {inner_lv}({io_monad} c) {{
         op: ComparisonOperator,
         rhs: &IRValue,
     ) -> Result<CompileResult, String> {
+        let is_string = lhs.type_hint().is_string();
         let lhs = self.compile_expr(lhs, prelude, cleanup, shadows.clone())?;
         let rhs = self.compile_expr(rhs, prelude, cleanup, shadows)?;
+        let (lhs, rhs) = if is_string {
+            (
+                CompileResult::Computation(format!("strcmp({lhs}->content,{rhs}->content)")),
+                CompileResult::BaseValue("0".to_string()),
+            )
+        } else {
+            (lhs, rhs)
+        };
         match op {
             ComparisonOperator::Eq => Ok(CompileResult::Computation(format!("({lhs}=={rhs})"))),
             ComparisonOperator::Ne => Ok(CompileResult::Computation(format!("({lhs}!={rhs})"))),

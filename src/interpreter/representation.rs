@@ -172,4 +172,8 @@ impl IRType {
     pub const fn is_io_monad(&self) -> bool {
         matches!(self, Self::IOMonad(..))
     }
+
+    pub const fn is_string(&self) -> bool {
+        matches!(self, Self::String)
+    }
 }

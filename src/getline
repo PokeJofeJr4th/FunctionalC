@@ -42,11 +42,11 @@ size_t getline(str **lineptr, FILE *stream)
                 return -1;
             }
         }
-        *p++ = c;
         if (c == '\n')
         {
             break;
         }
+        *p++ = c;
         c = fgetc(stream);
     }
 

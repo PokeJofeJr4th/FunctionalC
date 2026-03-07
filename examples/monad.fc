@@ -1,4 +1,8 @@
 writeLine("Hello! Please enter your name below:");
 let yourName := readLine;
-writeLine("Greetings,");
-writeLine(yourName)
+if yourName == "Obi-Wan Kenobi" {
+    writeLine("Hello There")
+} else {
+    writeLine("Greetings,");
+    writeLine(yourName)
+}
