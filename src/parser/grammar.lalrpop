@@ -6,20 +6,22 @@ grammar;
 
 pub Program: Expression = Expr;
 
-Ident: Rc<str> = r"[a-zA-Z$_]\w*" => Rc::from(<>);
+Ident: Rc<str> = r"[a-zA-Z$_][a-zA-Z$_0-9]*" => Rc::from(<>);
 
 Int: i64 = r"\-?[0-9]+" => <>.parse().unwrap();
 
 Float: f64 = r"\-?[0-9]+(\.[0-9]+)(e[+\-]?[0-9]+)?" => <>.parse().unwrap();
 
-String: Rc<str> = r#""([^\\]|(\\["nrt\\]))*""# => <>.parse::<String>().unwrap().into();
+String: Rc<str> = r#""([^\\"]|(\\["nrt\\]))*""# => <>.parse::<String>().unwrap().into();
 
 Expr0: Expression = {
     Int => Expression::Int(<>),
     Float => Expression::Float(<>),
     String => Expression::String(<>),
     Ident => Expression::Ident(<>),
-    "(" <Expr> ")",
+    "if" <condition:Box<Expr>> "{" <body:Box<Expr>> "}" "else" "{" <else_body:Box<Expr>> "}" => Expression::Ternary { <> },
+    "(" <Expr> ")" => <>,
+    "{" <Expr> "}" => <>,
 }
 
 Expr1: Expression = {
